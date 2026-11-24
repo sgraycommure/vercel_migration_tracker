@@ -12,7 +12,14 @@ function completed(entry: Entry) {
   return entry.status === completionStatus(entry, true);
 }
 
-function Progress({ label, rows }: { label: string; rows: Entry[] }) {
+export function launchProgressRows(entries: Entry[]) {
+  return {
+    features: entries.filter(entry => (entry.kind === "feature" && entry.status !== "Removed") || entry.kind === "plan"),
+    readiness: entries.filter(entry => entry.kind === "launch")
+  };
+}
+
+export function LaunchProgress({ label, rows }: { label: string; rows: Entry[] }) {
   const done = rows.filter(completed).length;
   const percentage = rows.length ? Math.round(done * 100 / rows.length) : 0;
   return <div className="launch-progress">
@@ -55,8 +62,7 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
     <div className="section-head"><div><h2>Readiness by tool</h2><p className="muted">Completion uses the catalog, build plans, and readiness checklist below.</p></div></div>
     <div className="launch-tools">{[...tools].sort((a,b) => wave[a.key] - wave[b.key]).map(tool => {
       const scoped = entries.filter(entry => entry.tool_key === tool.key);
-      const features = scoped.filter(entry => (entry.kind === "feature" && entry.status !== "Removed") || entry.kind === "plan");
-      const readiness = scoped.filter(entry => entry.kind === "launch");
+      const { features, readiness } = launchProgressRows(scoped);
       const openFeedback = scoped.filter(entry => entry.kind === "feedback" && entry.feedback_sheet_present !== false && entry.status !== "Resolved");
       const done = [...features, ...readiness].filter(completed).length;
       const total = features.length + readiness.length;
@@ -66,7 +72,7 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
           <span className="badge" data-status={complete ? "Passed" : "Planned"}>{complete ? "Checklist complete" : "In preparation"}</span>
         </summary>
         <div className="launch-tool-body">
-          <div className="launch-progress-grid"><Progress label="Planned features and builds" rows={features} /><Progress label="Readiness preparation" rows={readiness} /></div>
+          <div className="launch-progress-grid"><LaunchProgress label="Planned features and builds" rows={features} /><LaunchProgress label="Readiness preparation" rows={readiness} /></div>
           {managing && <div className="actions"><button className="primary" onClick={() => onAdd(tool.key)}>Add checklist item</button></div>}
           <details className="launch-category"><summary data-activity="Expand planned features and builds">Planned features and builds <small>{features.filter(completed).length}/{features.length}</small></summary>
             {features.length ? checklist(features) : <p className="empty">No planned features or builds.</p>}

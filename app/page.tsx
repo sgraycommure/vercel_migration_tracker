@@ -6,7 +6,7 @@ import { catalogKinds, day, labels, launchCategories, stamp, statuses, table, to
 
 import { feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, readFeedbackSheet } from "./feedback-sheet";
 
-import LaunchManagement, { completionStatus } from "./launch-management";
+import LaunchManagement, { completionStatus, LaunchProgress, launchProgressRows } from "./launch-management";
 import { TestingActivity, WorkspaceTesting, type TrackedOutcome } from "./testing-activity";
 
 import ReleaseTesting from "./release-testing";
@@ -168,7 +168,7 @@ export default function Home() {
       if (!element || element.matches(":disabled")) return;
       // Use control labels only. Titles from operational records and form contents stay out of telemetry.
       const action = element.dataset.activity || (
-        element.matches(".row-link, .tool-card, .stat") ? "Open tracker record or view"
+        element.matches(".row-link, .tool-link, .stat") ? "Open tracker record or view"
           : element.closest(".launch-checklist") ? "Use checklist control"
           : element.matches("summary") ? "Expand section"
           : element.getAttribute("aria-label") || element.textContent?.trim() || "Use application control"
@@ -274,7 +274,6 @@ export default function Home() {
   const selectedTool = tools.find(tool => tool.key === scope);
   const summary = selectedTool ? scoped.find(entry => entry.kind === "tool") : undefined;
   const tests = scoped.filter(entry => entry.kind === "test");
-  const plans = scoped.filter(entry => entry.kind === "plan" && entry.status !== "Shipped");
   const feedback = scoped.filter(entry => entry.kind === "feedback" && entry.status !== "Resolved");
   const catalog = scoped.filter(entry => catalogKinds.has(entry.kind));
   const currentTab = tabs.find(item => item.key === tab);
@@ -363,25 +362,29 @@ export default function Home() {
           onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry })}
           onCheck={(entry, checked) => void saveStatus(entry, completionStatus(entry, checked))} onOpen={setFocused} />
         : tab === "overview" ? <>
+          {scope === "all" && <section className="section" aria-label="Launch progress by tool">
+            <div className="section-head"><h2>Launch progress by tool</h2></div>
+            <div className="tool-grid">
+              {tools.map(tool => {
+                const { features, readiness } = launchProgressRows(entries.filter(entry => entry.tool_key === tool.key));
+                return <article className="tool-progress-card" key={tool.key} aria-labelledby={`overview-${tool.key}`}>
+                  <h3 id={`overview-${tool.key}`}>
+                    <button className="tool-link" onClick={() => navigate("overview", tool.key)}>
+                      <Mark tone={tool.color}>{tool.short}</Mark><span>{tool.name}</span><span aria-hidden="true">↗</span>
+                    </button>
+                  </h3>
+                  <LaunchProgress label="Planned features and builds" rows={features} />
+                  <LaunchProgress label="Readiness preparation" rows={readiness} />
+                </article>;
+              })}
+            </div>
+          </section>}
           <section className="stats" aria-label="Tracking totals">
-            <Stat title="Catalog entries" value={catalog.length} detail={`${catalog.filter(entry => entry.kind === "feature").length} features · ${catalog.filter(entry => entry.kind === "metric").length} metrics`} onClick={() => navigate("catalog")} />
-            <Stat title="Open build plans" value={plans.length} detail="Backlog through testing" onClick={() => navigate("plan")} />
+            <Stat title="Tracked features and metrics" value={catalog.length} detail={`${catalog.filter(entry => entry.kind === "feature").length} features · ${catalog.filter(entry => entry.kind === "metric").length} metrics`} onClick={() => navigate("catalog")} />
             <Stat title="Open feedback" value={feedback.length} detail="New or triaged" onClick={() => navigate("feedback")} />
             <Stat title="Logged test results" value={tests.length} detail={`${people.length} ${people.length === 1 ? "tester" : "testers"} · ${tests.filter(entry => entry.status === "Passed").length} passed`} onClick={() => navigate("test")} />
           </section>
-          {scope === "all" ? <section className="section">
-            <div className="section-head"><h2>Tools</h2></div>
-            <div className="tool-grid">
-              {tools.map(tool => {
-                const rows = entries.filter(entry => entry.tool_key === tool.key);
-                return <button className="tool-card" key={tool.key} onClick={() => navigate("overview", tool.key)}>
-                  <div className="tool-card-top"><Mark tone={tool.color}>{tool.short}</Mark><span aria-hidden="true">↗</span></div>
-                  <h3>{tool.name}</h3><p>{rows.find(entry => entry.kind === "tool")?.details}</p>
-                  <span className="tool-count">{rows.filter(entry => entry.kind === "feature").length} features · {rows.filter(entry => entry.kind === "metric").length} metrics</span>
-                </button>;
-              })}
-            </div>
-          </section> : <section className="section">
+          {scope !== "all" && <section className="section">
             <div className="section-head"><h2>Evaluation follow-up</h2><button className="secondary" onClick={() => navigate("catalog")}>View catalog</button></div>
             <EntryTable rows={catalog.filter(entry => ["Needs verification", "Data gap"].includes(entry.status))} visibleTool={false} onOpen={setFocused} items={itemById} />
           </section>}
