@@ -179,8 +179,9 @@ export default function Home() {
     return () => document.removeEventListener("click", recordClick, true);
   }, [canRecord, userId, scope, activityPage]);
 
-  function storeEntry(entry: Entry) {
-    setEntries(current => [entry, ...current.filter(item => item.id !== entry.id)].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+  function storeEntries(saved: Entry[]) {
+    const ids = new Set(saved.map(entry => entry.id));
+    setEntries(current => [...saved, ...current.filter(item => !ids.has(item.id))].sort((a, b) => b.created_at.localeCompare(a.created_at)));
   }
 
   async function saveStatus(entry: Entry, nextStatus: string) {
@@ -190,7 +191,7 @@ export default function Home() {
       const result = await client.from(table).update({ status: nextStatus })
         .eq("id", entry.id).eq("updated_at", entry.updated_at).select().single();
       if (result.error) throw result.error;
-      storeEntry(result.data as Entry);
+      storeEntries([result.data as Entry]);
       if (catalogKinds.has(entry.kind) && entry.status === "Removed") setRefresh(value => value + 1);
       setNotice(`${labels[entry.kind]} status saved.`);
     } catch {
@@ -296,12 +297,17 @@ export default function Home() {
     setFocused(entry ? { ...entry, status: outcome } : null);
   }
 
-  function onSaved(entry: Entry) {
-    storeEntry(entry);
-    if (catalogKinds.has(entry.kind)) setRefresh(value => value + 1);
-    if (tab !== "launch" && tab !== "testing") navigate(entry.kind === "feature" || entry.kind === "metric" ? "catalog" : entry.kind as Tab, scope);
+  function onSaved(saved: Entry[]) {
+    const [entry] = saved;
+    const catalog = catalogKinds.has(entry.kind);
+    storeEntries(saved);
+    if (catalog) setRefresh(value => value + 1);
+    if (tab !== "launch" && tab !== "testing") {
+      const nextScope = catalog && scope !== "all" && saved.length === 1 ? entry.tool_key : scope;
+      navigate(catalog ? "catalog" : entry.kind as Tab, saved.length > 1 ? "all" : nextScope);
+    }
     setDraft(null);
-    setNotice(`${labels[entry.kind]} saved.`);
+    setNotice(saved.length > 1 ? `${labels[entry.kind]} added to ${saved.length} tools.` : `${labels[entry.kind]} saved.`);
   }
 
   return <div className="shell">
@@ -561,10 +567,13 @@ function EntryDetails({ entry, parent, close, edit, add }: {
 }
 
 function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
-  draft: Draft; scope: Scope; entries: Entry[]; onClose: () => void; onSaved: (entry: Entry) => void; onFailure: (tool: ToolKey) => void;
+  draft: Draft; scope: Scope; entries: Entry[]; onClose: () => void; onSaved: (saved: Entry[]) => void; onFailure: (tool: Scope) => void;
 }) {
   const { kind, entry, parent } = draft;
-  const [tool, setTool] = useState<string>(entry?.tool_key ?? parent?.tool_key ?? draft.tool ?? (scope === "all" ? "" : scope));
+  const bulkCreate = catalogKinds.has(kind) && !entry && !parent && !draft.tool;
+  const initialTool = entry?.tool_key ?? parent?.tool_key ?? draft.tool ?? (scope === "all" ? null : scope);
+  const [selectedTools, setSelectedTools] = useState<ToolKey[]>(initialTool ? [initialTool] : []);
+  const tool = selectedTools.length === 1 ? selectedTools[0] : "";
   const [related, setRelated] = useState(entry?.parent_id ?? parent?.id ?? "");
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState("");
@@ -579,12 +588,12 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
     const title = read("title");
     const deployment = read("deployment_url");
     const source = read("source_url");
-    if (!title || !tool) { setProblem("Select a tool and enter a title."); return; }
+    if (!title || !selectedTools.length) { setProblem("Select at least one tool and enter a title."); return; }
     if ((deployment && !validLink(deployment)) || (source && !validLink(source))) {
       setProblem("Use a valid https:// link."); return;
     }
     const values = {
-      title, details: read("details"), status: read("status"), parent_id: related || null,
+      title, details: read("details"), status: read("status"), parent_id: tool && related || null,
       area: read("area") || null, owner: read("owner") || null, due_date: read("due_date") || null,
       deployment_url: deployment || null, source_url: source || null,
       ...(kind === "metric" ? { metric_source: read("metric_source") || null } : {})
@@ -593,13 +602,15 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
     setProblem("");
     try {
       const result = entry
-        ? await client.from(table).update(values).eq("id", entry.id).select().single()
-        : await client.from(table).insert({ ...values, tool_key: tool, kind, environment: read("environment") || null }).select().single();
-      if (result.error) throw result.error;
-      onSaved(result.data as Entry);
+        ? await client.from(table).update(values).eq("id", entry.id).select()
+        : await client.from(table).insert(selectedTools.map(tool_key => ({
+          ...values, tool_key, kind, environment: read("environment") || null
+        }))).select();
+      if (result.error || result.data.length === 0) throw result.error ?? new Error("No entries returned");
+      onSaved(result.data as Entry[]);
     } catch {
-      setProblem("This entry could not be saved. Check your access and try again.");
-      onFailure(tool as ToolKey);
+      setProblem("The save could not be confirmed. Check your access and try again.");
+      onFailure(tool || "all");
     } finally {
       setSaving(false);
     }
@@ -609,8 +620,23 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
     <form onSubmit={submit}>
       <div className="dialog-body form">
         {problem && <p className="alert wide" role="alert">{problem}</p>}
-        <label className="wide">Tool<select required value={tool} disabled={!!entry || !!parent || !!draft.tool} onChange={event => { setTool(event.target.value); setRelated(""); }}>
-          <option value="">Select a tool</option>{tools.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>
+        {bulkCreate ? <fieldset className="wide tool-picker">
+          <legend>Tools</legend>
+          {tools.map(item => <label key={item.key}>
+            <input type="checkbox" checked={selectedTools.includes(item.key)} disabled={saving} onChange={event => {
+              const checked = event.target.checked;
+              setSelectedTools(current => checked ? [...current, item.key] : current.filter(value => value !== item.key));
+              setRelated("");
+            }} />
+            {item.name}
+          </label>)}
+        </fieldset> : <label className="wide">Tool<select required value={tool} disabled={!!entry || !!parent || !!draft.tool || saving}
+          onChange={event => {
+            const selected = tools.find(item => item.key === event.target.value);
+            setSelectedTools(selected ? [selected.key] : []);
+            setRelated("");
+          }}>
+          <option value="">Select a tool</option>{tools.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>}
         <label className="wide">{kind === "test" ? "Action tested" : "Title"}<input name="title" required maxLength={160} defaultValue={entry?.title} /></label>
         <label>{kind === "test" ? "Outcome" : "Status"}<select name="status" defaultValue={entry?.status ?? (catalogKinds.has(kind) ? "Needs verification" : statuses[kind][0])}>
           {statuses[kind].map(value => <option key={value}>{value}</option>)}</select></label>
@@ -622,15 +648,17 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
           <label>Owner<input name="owner" maxLength={160} defaultValue={entry?.owner ?? ""} /></label>
           <label>Due date<input type="date" name="due_date" defaultValue={entry?.due_date ?? ""} /></label>
         </>}
-        <label className="wide">Related entry <select value={related} onChange={event => setRelated(event.target.value)}>
-          <option value="">None</option>{relatedEntries.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.title}</option>)}</select></label>
+        <label className="wide">Related entry <select value={related} disabled={!tool || saving} onChange={event => setRelated(event.target.value)}>
+          <option value="">None</option>{relatedEntries.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.title}</option>)}</select>
+          {selectedTools.length > 1 && <small className="muted">Related entries are specific to one tool. You can link each copy after saving.</small>}
+        </label>
         <label className="wide">{kind === "test" ? "Steps and observations" : kind === "plan" ? "Scope and acceptance criteria" : kind === "launch" ? "Notes" : "Details"}
           <textarea name="details" rows={4} maxLength={5000} defaultValue={entry?.details} required={kind === "feedback" || kind === "plan"} /></label>
         {(kind === "test" || kind === "plan" || kind === "launch") && <label className="wide">{kind === "launch" ? "Related link" : "Deployment link"} <input name="deployment_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.deployment_url ?? ""} /></label>}
         {kind === "metric" && <label className="wide">Metric source<input name="metric_source" maxLength={500} defaultValue={entry?.metric_source ?? ""} /></label>}
         {catalogKinds.has(kind) && <label className="wide">Source link <input name="source_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.source_url ?? ""} /></label>}
       </div>
-      <footer className="dialog-footer"><button className="secondary" type="button" disabled={saving} onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : "Save"}</button></footer>
+      <footer className="dialog-footer"><button className="secondary" type="button" disabled={saving} onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : selectedTools.length > 1 ? `Save to ${selectedTools.length} tools` : "Save"}</button></footer>
     </form>
   </Modal>;
 }
