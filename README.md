@@ -16,3 +16,13 @@ Catalog status describes the source review. Use the usage tracker to record find
 2. Supply the shared instance URL and Supabase publishable key. Run `npm run dev`, `npm run typecheck`, or `npm run build`.
 3. On Vercel use the `vercel_migration_tracker` project, the same two public environment variables, and the `tracker-preview` branch for preview testing.
 4. Ensure Supabase Auth Redirect URLs allow the preview origin's `/auth/callback`. The application uses PKCE and keeps its local session separate from the other tools.
+
+## Feedback workbook
+
+Feedback rows are categorized by worksheet name and linked to their original row. Admins and Execs can use **Sync Google Sheet** to refresh the snapshot after authorizing Google Sheets read access. The Google OAuth project must have Sheets API access enabled. The integration reads this workbook's five recognized tabs and stores the imported snapshot in the same tracker table. Edit imported feedback in the workbook. Tracker-created feedback remains editable in the tracker.
+
+## Launch management and testing activity
+
+Launch Management groups checklist items by tool and category. Readiness totals update from checklist completion, catalog feature status, and build plan status. Follow-up feedback remains visible in each tool's punch list.
+
+Recent Testing and Usage Tracker combine manually logged tests, Vercel activity recorded by the source tools, Efficiency Log audit results, and new tracker activity. Cross-user activity is available to tracker Admins. The status distinguishes recorded results from clicks with no observed outcome. Tracker collection records control labels and page names, with no form contents. Historical telemetry coverage follows what each tool collected.
