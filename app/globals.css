@@ -143,3 +143,19 @@ dialog::backdrop { background: #111c37a6; }
   .section-head { align-items: flex-start; flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
+.tool-groups { display: grid; gap: 10px; }
+.tool-group { border: 1px solid var(--line); border-radius: 10px; }
+.tool-group-toggle { width: 100%; display: flex; align-items: center; gap: 11px; padding: 10px 12px; border: 0; border-radius: 10px; background: #f7f9fd; color: var(--ink); text-align: left; }
+.tool-group-toggle:hover { background: #edf3fd; }
+.group-name { font-weight: 750; }
+.group-count { margin-left: auto; color: var(--muted); font-weight: 500; font-size: 12px; white-space: nowrap; }
+.group-chevron { font-size: 19px; line-height: 1; padding: 0 3px; }
+.tool-group-toggle[aria-expanded="true"] .group-chevron { transform: rotate(180deg); }
+.tool-group-content { padding: 13px; border-top: 1px solid var(--line); }
+.tool-group-content section + section { margin-top: 14px; }
+.tool-group-content h4 { margin: 0 0 7px; font-size: 14px; }
+@media (max-width: 480px) {
+  .tool-group-toggle { flex-wrap: wrap; }
+  .group-name { flex: 1; }
+  .group-count { margin-left: 0; }
+}

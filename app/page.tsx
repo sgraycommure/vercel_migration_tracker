@@ -4,6 +4,8 @@ import { createClient, type Session } from "@supabase/supabase-js";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { catalogKinds, day, labels, stamp, statuses, table, tools, validLink, type Entry, type Kind, type Tab, type ToolKey } from "./model";
 
+import { feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, readFeedbackSheet } from "./feedback-sheet";
+
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 const client = url && key ? createClient(url, key, {
@@ -47,6 +49,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [checkedUser, setCheckedUser] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncProblem, setSyncProblem] = useState("");
   const userId = session?.user.id;
   const canManage = /^(admin|exec)$/i.test(role ?? "");
 
@@ -105,6 +109,48 @@ export default function Home() {
     return () => { active = false; };
   }, [userId, refresh]);
 
+  useEffect(() => {
+    const db = client;
+    const pending = sessionStorage.getItem(feedbackSyncKey);
+    if (!db || !canManage || checkedUser !== userId || !pending) return;
+    sessionStorage.removeItem(feedbackSyncKey);
+    setTab("feedback");
+    const token = session?.provider_token;
+    if (!token || Date.now() - Number(pending) > 10 * 60_000) {
+      setSyncProblem("Google authorization did not finish. Reconnect to refresh feedback.");
+      return;
+    }
+    setSyncing(true);
+    readFeedbackSheet(token).then(async snapshot => {
+      const { data, error } = await db.rpc("vercel_migration_tracker_sync_feedback", { snapshot });
+      if (error) throw new Error("The workbook was read, but the tracker could not save it. Try again.");
+      setRefresh(value => value + 1);
+      setNotice(`Refreshed ${data} feedback entries from Google Sheets.`);
+    }).catch((error: unknown) => {
+      setSyncProblem(error instanceof Error ? error.message : "Feedback sync failed. Try again.");
+    }).finally(() => setSyncing(false));
+  }, [canManage, checkedUser, session?.provider_token, userId]);
+
+  async function connectFeedbackSheet() {
+    if (!client || syncing) return;
+    setSyncing(true);
+    setSyncProblem("");
+    sessionStorage.setItem(feedbackSyncKey, String(Date.now()));
+    const { error } = await client.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: new URL("/auth/callback", window.location.origin).href,
+        scopes: feedbackSheetScope,
+        queryParams: { hd: "commure.com", prompt: "consent" }
+      }
+    });
+    if (error) {
+      sessionStorage.removeItem(feedbackSyncKey);
+      setSyncProblem("Google authorization could not start. Try again.");
+      setSyncing(false);
+    }
+  }
+
   async function signIn() {
     if (!client) return;
     setSigningIn(true);
@@ -152,7 +198,8 @@ export default function Home() {
     </main>;
   }
 
-  const scoped = entries.filter(entry => scope === "all" || entry.tool_key === scope);
+  const scoped = entries.filter(entry => (scope === "all" || entry.tool_key === scope)
+    && !(entry.kind === "feedback" && entry.feedback_sheet_present === false));
   const selectedTool = tools.find(tool => tool.key === scope);
   const summary = selectedTool ? scoped.find(entry => entry.kind === "tool") : undefined;
   const tests = scoped.filter(entry => entry.kind === "test");
@@ -167,12 +214,12 @@ export default function Home() {
   const filtered = tabRows.filter(entry =>
     (!status || entry.status === status) && (!kind || entry.kind === kind)
     && (!tester || entry.actor_email === tester) && (!environment || entry.environment === environment)
-    && (!query || [entry.title, entry.details, entry.area, entry.owner, entry.actor_email,
+    && (!query || [entry.title, entry.details, entry.area, entry.owner, entry.actor_email, entry.metric_source, entry.feedback_requester, entry.feedback_response, entry.feedback_sheet_status,
       tools.find(tool => tool.key === entry.tool_key)?.name].some(value => value?.toLowerCase().includes(query)))
   );
   if (tab === "catalog") filtered.sort((a, b) => (a.area ?? "").localeCompare(b.area ?? "") || a.title.localeCompare(b.title));
   const itemById = new Map(entries.map(entry => [entry.id, entry]));
-  const canEdit = (entry: Entry) => entry.kind !== "tool" && entry.kind !== "test" && (canManage || entry.created_by === userId);
+  const canEdit = (entry: Entry) => entry.kind !== "tool" && entry.kind !== "test" && !entry.feedback_sheet_tab && (canManage || entry.created_by === userId);
 
   function onSaved(entry: Entry) {
     setEntries(current => [entry, ...current.filter(item => item.id !== entry.id)].sort((a, b) => b.created_at.localeCompare(a.created_at)));
@@ -256,13 +303,21 @@ export default function Home() {
         </> : <section className="section">
           <div className="section-head"><div><h2>{currentTab.name}</h2>
             {tab === "test" && <p className="muted">Test actions recorded by signed-in users, with deployment, outcome, and notes.</p>}
-            {tab === "catalog" && <p className="muted">Inventory from code and project documentation. Use test actions to verify deployed behavior.</p>}
+            {tab === "catalog" && <p className="muted">Expand a tool to see its features, metrics, and metric sources.</p>}
+            {tab === "feedback" && <p className="muted">Feedback from the migration spreadsheet and entries submitted here.</p>}
           </div><div className="actions">
+            {tab === "feedback" && <>
+              <a className="secondary" href={feedbackSheetUrl} target="_blank" rel="noreferrer">Open feedback sheet ↗</a>
+              {canManage && <button className="secondary" disabled={syncing} onClick={() => void connectFeedbackSheet()}>
+                {syncing ? "Syncing…" : "Sync Google Sheet"}
+              </button>}
+            </>}
             {tab === "catalog" ? canManage && <>
               <button className="secondary" onClick={() => setDraft({ kind: "feature" })}>Add feature</button>
               <button className="secondary" onClick={() => setDraft({ kind: "metric" })}>Add metric</button>
             </> : tab !== "test" && <button className="primary" onClick={() => setDraft({ kind: tab })}>Add {labels[tab].toLowerCase()}</button>}
           </div></div>
+          {tab === "feedback" && syncProblem && <p className="alert" role="alert">{syncProblem}</p>}
           <div className="filters">
             <input aria-label="Search entries" placeholder="Search entries" type="search" value={search} onChange={event => setSearch(event.target.value)} />
             {tab === "catalog" && <select aria-label="Entry type" value={kind} onChange={event => setKind(event.target.value)}><option value="">All types</option><option value="feature">Features</option><option value="metric">Metrics</option></select>}
@@ -272,7 +327,11 @@ export default function Home() {
               <select aria-label="Environment" value={environment} onChange={event => setEnvironment(event.target.value)}><option value="">All environments</option><option>Preview</option><option>Production</option><option>Local</option></select>
             </>}
           </div>
-          <EntryTable rows={filtered} visibleTool={scope === "all"} onOpen={setFocused} items={itemById} usage={tab === "test"} empty={tabRows.length ? "No entries match these filters." : "No entries recorded yet."} />
+          {tab === "catalog" || tab === "feedback" ? <ToolGroups key={`${tab}-${scope}`}
+            scope={scope} tab={tab} rows={filtered} items={itemById} onOpen={setFocused}
+            filterKind={kind} filtering={!!(query || kind || status)} />
+            : <EntryTable rows={filtered} visibleTool={scope === "all"} onOpen={setFocused} items={itemById} usage={tab === "test"}
+              empty={tabRows.length ? "No entries match these filters." : "No entries recorded yet."} />}
         </section>}
       </div>
     </main>
@@ -288,24 +347,68 @@ function Stat({ title, detail, value, onClick }: { title: string; detail: string
   return <button className="stat" onClick={onClick}><span>{title}</span><strong>{value}</strong><small>{detail}</small></button>;
 }
 
-function EntryTable({ rows, visibleTool, usage, items, onOpen, empty = "No follow-up entries." }: {
-  rows: Entry[]; visibleTool: boolean; usage?: boolean; items: Map<string, Entry>; onOpen: (entry: Entry) => void; empty?: string;
+function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen }: {
+  scope: Scope; tab: "catalog" | "feedback"; rows: Entry[]; filterKind: string; filtering: boolean;
+  items: Map<string, Entry>; onOpen: (entry: Entry) => void;
+}) {
+  const [expanded, setExpanded] = useState<Partial<Record<ToolKey, boolean>>>({});
+  const groups = tools.filter(tool => scope === "all" || tool.key === scope);
+  return <div className="tool-groups">
+    {groups.map(tool => {
+      const groupRows = rows.filter(entry => entry.tool_key === tool.key);
+      const features = groupRows.filter(entry => entry.kind === "feature");
+      const metrics = groupRows.filter(entry => entry.kind === "metric");
+      const open = expanded[tool.key] ?? (scope !== "all" || filtering || tab === "feedback");
+      return <div className="tool-group" key={tool.key}>
+        <h3><button className="tool-group-toggle" aria-expanded={open} aria-controls={`${tab}-${tool.key}-entries`}
+          onClick={() => setExpanded(current => ({ ...current, [tool.key]: !open }))}>
+          <Mark tone={tool.color}>{tool.short}</Mark><span className="group-name">{tool.name}</span>
+          <span className="group-count">{tab === "catalog" ? `${features.length} features · ${metrics.length} metrics` : `${groupRows.length} feedback`}</span>
+          <span className="group-chevron" aria-hidden="true">⌄</span>
+        </button></h3>
+        <div id={`${tab}-${tool.key}-entries`} className="tool-group-content" hidden={!open}>
+          {open && (tab === "feedback"
+            ? <EntryTable rows={groupRows} visibleTool={false} variant="feedback" items={items} onOpen={onOpen}
+                empty={filtering ? "No feedback matches these filters." : "No feedback recorded for this tool."} />
+            : <>
+              {filterKind !== "metric" && <section><h4>Features</h4>
+                <EntryTable rows={features} visibleTool={false} items={items} onOpen={onOpen} empty="No matching features." />
+              </section>}
+              {filterKind !== "feature" && <section><h4>Metrics</h4>
+                <EntryTable rows={metrics} visibleTool={false} variant="metric" items={items} onOpen={onOpen} empty="No matching metrics." />
+              </section>}
+            </>)}
+        </div>
+      </div>;
+    })}
+  </div>;
+}
+
+function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, empty = "No follow-up entries." }: {
+  rows: Entry[]; visibleTool: boolean; usage?: boolean; variant?: "metric" | "feedback"; items: Map<string, Entry>; onOpen: (entry: Entry) => void; empty?: string;
 }) {
   const showTest = usage || rows[0]?.kind === "test";
   const showPlan = rows[0]?.kind === "plan";
   if (!rows.length) return <p className="empty">{empty}</p>;
   return <div className="table-wrap"><table>
-    <thead><tr><th>{showTest ? "Action" : "Entry"}</th>{visibleTool && <th>Tool</th>}<th>{showTest ? "Outcome" : "Status"}</th>
+    <thead><tr><th>{showTest ? "Action" : variant === "metric" ? "Metric" : variant === "feedback" ? "Feedback" : "Entry"}</th>{visibleTool && <th>Tool</th>}<th>{showTest ? "Outcome" : "Status"}</th>
       {showTest ? <><th>Tester</th><th>Environment</th><th>Logged (ET)</th></> :
-        showPlan ? <><th>Owner</th><th>Target date</th></> : <th>Area / type</th>}</tr></thead>
+        showPlan ? <><th>Owner</th><th>Target date</th></> : variant === "feedback" ? <><th>Requested by</th><th>Source</th></>
+          : variant === "metric" ? <><th>Area</th><th>Metric source</th></> : <th>Area / type</th>}</tr></thead>
     <tbody>{rows.map(entry => <tr key={entry.id}>
       <td><button className="row-link" onClick={() => onOpen(entry)}>{entry.title}</button>
         {entry.parent_id && <small className="subline">{items.get(entry.parent_id)?.title}</small>}</td>
       {visibleTool && <td>{tools.find(tool => tool.key === entry.tool_key)?.name}</td>}
-      <td><Badge>{entry.status}</Badge></td>
+      <td><Badge>{entry.status}</Badge>{entry.feedback_sheet_status && <small className="subline">{entry.feedback_sheet_status}</small>}</td>
       {showTest ? <><td>{entry.actor_email ?? "—"}</td><td>{entry.environment}</td><td className="nowrap">{stamp.format(new Date(entry.created_at))}</td></>
         : showPlan ? <><td>{entry.owner ?? "—"}</td><td>{entry.due_date ? day.format(new Date(entry.due_date)) : "—"}</td></>
-        : <td>{[entry.area, labels[entry.kind]].filter(Boolean).join(" · ")}</td>}
+        : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td><td>
+          {entry.feedback_sheet_tab && validLink(entry.source_url)
+            ? <a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">{entry.feedback_sheet_tab} ↗</a> : "Tracker"}
+        </td></> : variant === "metric" ? <><td>{entry.area ?? "—"}</td><td>
+          <span>{entry.metric_source || "—"}</span>
+          {validLink(entry.source_url) && <span className="subline"><a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">View source ↗</a></span>}
+        </td></> : <td>{[entry.area, labels[entry.kind]].filter(Boolean).join(" · ")}</td>}
     </tr>)}</tbody>
   </table></div>;
 }
@@ -331,6 +434,11 @@ function EntryDetails({ entry, parent, close, edit, add }: {
       <div className="detail-meta">{tools.find(tool => tool.key === entry.tool_key)?.name} <Badge>{entry.status}</Badge></div>
       {entry.area && <p className="muted">{entry.area} · {labels[entry.kind]}</p>}
       <p className="details-copy">{entry.details || "No notes added."}</p>
+      {entry.metric_source && <p><strong>Metric source</strong> {entry.metric_source}</p>}
+      {entry.feedback_requester && <p><strong>Requested by</strong> {entry.feedback_requester}</p>}
+      {entry.feedback_sheet_status && <p><strong>Sheet status</strong> {entry.feedback_sheet_status}</p>}
+      {entry.feedback_response && <p className="details-copy"><strong>Response</strong> {entry.feedback_response}</p>}
+      {entry.feedback_sheet_present === false && <p className="muted">This entry was removed from the source sheet.</p>}
       {parent && <p><strong>Related entry</strong> {parent.title}</p>}
       {entry.actor_email && <p><strong>{entry.kind === "test" ? "Tester" : "Submitted by"}</strong> {entry.actor_email}</p>}
       {entry.environment && <p><strong>Environment</strong> {entry.environment}</p>}
@@ -338,7 +446,7 @@ function EntryDetails({ entry, parent, close, edit, add }: {
       {entry.due_date && <p><strong>Target date</strong> {day.format(new Date(entry.due_date))}</p>}
       <p className="muted">{entry.kind === "test" ? "Logged" : "Last updated"} {stamp.format(new Date(entry.updated_at))} ET</p>
       <div className="actions">{deployment && <a href={deployment} target="_blank" rel="noreferrer">Open deployment ↗</a>}
-        {source && <a href={source} target="_blank" rel="noreferrer">Review source ↗</a>}</div>
+        {source && <a href={source} target="_blank" rel="noreferrer">{entry.feedback_sheet_tab ? "Open sheet row" : "Review source"} ↗</a>}</div>
     </div>
     {(edit || add) && <footer className="dialog-footer">
       {edit && <button className="secondary" onClick={edit}>Edit</button>}
@@ -375,7 +483,8 @@ function Editor({ draft, scope, entries, onClose, onSaved }: {
     const values = {
       title, details: read("details"), status: read("status"), parent_id: related || null,
       area: read("area") || null, owner: read("owner") || null, due_date: read("due_date") || null,
-      deployment_url: deployment || null, source_url: source || null
+      deployment_url: deployment || null, source_url: source || null,
+      ...(kind === "metric" ? { metric_source: read("metric_source") || null } : {})
     };
     setSaving(true);
     setProblem("");
@@ -412,6 +521,7 @@ function Editor({ draft, scope, entries, onClose, onSaved }: {
         <label className="wide">{kind === "test" ? "Steps and observations" : kind === "plan" ? "Scope and acceptance criteria" : "Details"}
           <textarea name="details" rows={4} maxLength={5000} defaultValue={entry?.details} required={kind === "feedback" || kind === "plan"} /></label>
         {(kind === "test" || kind === "plan") && <label className="wide">Deployment link <input name="deployment_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.deployment_url ?? ""} /></label>}
+        {kind === "metric" && <label className="wide">Metric source<input name="metric_source" maxLength={500} defaultValue={entry?.metric_source ?? ""} /></label>}
         {catalogKinds.has(kind) && <label className="wide">Source link <input name="source_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.source_url ?? ""} /></label>}
       </div>
       <footer className="dialog-footer"><button className="secondary" type="button" disabled={saving} onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : "Save"}</button></footer>

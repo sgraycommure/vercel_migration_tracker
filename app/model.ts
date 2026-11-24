@@ -36,6 +36,12 @@ export type Entry = {
   environment: string | null;
   deployment_url: string | null;
   source_url: string | null;
+  metric_source: string | null;
+  feedback_requester: string | null;
+  feedback_sheet_tab: string | null;
+  feedback_sheet_status: string | null;
+  feedback_response: string | null;
+  feedback_sheet_present: boolean;
   parent_id: string | null;
   created_by: string | null;
   actor_email: string | null;
