@@ -1,0 +1,89 @@
+import { day, launchCategories, tools, type Entry, type ToolKey } from "./model";
+
+const wave: Record<ToolKey, number> = { launch: 1, px: 2, "customer-ops": 2, capacity: 3, efficiency: 3 };
+
+export function completionStatus(entry: Entry, checked: boolean) {
+  if (entry.kind === "launch") return checked ? "Complete" : "Open";
+  if (entry.kind === "plan") return checked ? "Shipped" : "Planned";
+  return checked ? "Implemented" : "Planned";
+}
+
+function completed(entry: Entry) {
+  return entry.status === completionStatus(entry, true);
+}
+
+function Progress({ label, rows }: { label: string; rows: Entry[] }) {
+  const done = rows.filter(completed).length;
+  const percentage = rows.length ? Math.round(done * 100 / rows.length) : 0;
+  return <div className="launch-progress">
+    <div><strong>{label}</strong><span>{done} of {rows.length} complete</span></div>
+    <progress aria-label={label} max={100} value={percentage} />
+  </div>;
+}
+
+export default function LaunchManagement({ entries, managing, pending, onAdd, onEdit, onCheck, onOpen }: {
+  entries: Entry[];
+  managing: boolean;
+  pending: string[];
+  onAdd: (tool: ToolKey) => void;
+  onEdit: (entry: Entry) => void;
+  onCheck: (entry: Entry, checked: boolean) => void;
+  onOpen: (entry: Entry) => void;
+}) {
+  function checklist(rows: Entry[]) {
+    return <ul className="launch-checklist">{rows.map(entry => (
+      <li key={entry.id}>
+        <input type="checkbox" aria-label={`Mark ${entry.title} ${completed(entry) ? "open" : "complete"}`}
+          data-activity="Toggle checklist item" checked={completed(entry)} disabled={!managing || pending.includes(entry.id)}
+          onChange={event => onCheck(entry, event.target.checked)} />
+        <div className="launch-item">
+          <button className="row-link" data-activity="Open checklist details" onClick={() => onOpen(entry)}>{entry.title}</button>
+          {entry.details && <p>{entry.details}</p>}
+          <div className="launch-meta">
+            <span>{entry.owner || "Unassigned"}</span>
+            <span>{entry.due_date ? `Due ${day.format(new Date(entry.due_date))}` : "No due date"}</span>
+            {entry.kind !== "launch" && <span>{entry.status}</span>}
+          </div>
+        </div>
+        {managing && <button className="secondary" data-activity="Edit checklist item" aria-label={`Edit ${entry.title}`}
+          onClick={() => onEdit(entry)}>Edit</button>}
+      </li>
+    ))}</ul>;
+  }
+
+  return <section className="section" aria-label="Launch management">
+    <div className="section-head"><div><h2>Readiness by tool</h2><p className="muted">Completion uses the catalog, build plans, and readiness checklist below.</p></div></div>
+    <div className="launch-tools">{[...tools].sort((a,b) => wave[a.key] - wave[b.key]).map(tool => {
+      const scoped = entries.filter(entry => entry.tool_key === tool.key);
+      const features = scoped.filter(entry => (entry.kind === "feature" && entry.status !== "Removed") || entry.kind === "plan");
+      const readiness = scoped.filter(entry => entry.kind === "launch");
+      const openFeedback = scoped.filter(entry => entry.kind === "feedback" && entry.feedback_sheet_present !== false && entry.status !== "Resolved");
+      const done = [...features, ...readiness].filter(completed).length;
+      const total = features.length + readiness.length;
+      const complete = total > 0 && done === total && openFeedback.length === 0;
+      return <details className="launch-tool" key={tool.key}>
+        <summary data-activity="Expand or collapse launch checklist"><strong>{tool.name}</strong><span>Wave {wave[tool.key]} · {done}/{total} complete</span>
+          <span className="badge" data-status={complete ? "Passed" : "Planned"}>{complete ? "Checklist complete" : "In preparation"}</span>
+        </summary>
+        <div className="launch-tool-body">
+          <div className="launch-progress-grid"><Progress label="Planned features and builds" rows={features} /><Progress label="Readiness preparation" rows={readiness} /></div>
+          {managing && <div className="actions"><button className="primary" onClick={() => onAdd(tool.key)}>Add checklist item</button></div>}
+          <details className="launch-category"><summary data-activity="Expand planned features and builds">Planned features and builds <small>{features.filter(completed).length}/{features.length}</small></summary>
+            {features.length ? checklist(features) : <p className="empty">No planned features or builds.</p>}
+          </details>
+          {launchCategories.map(category => {
+            const rows = readiness.filter(entry => entry.area === category);
+            return <details className="launch-category" key={category}>
+              <summary data-activity={`Expand ${category} checklist`}>{category} <small>{rows.filter(completed).length}/{rows.length}</small></summary>
+              {rows.length ? checklist(rows) : <p className="empty">No checklist items in this category.</p>}
+              {category === "Punch list" && openFeedback.length > 0 && <div className="launch-feedback">
+                <strong>Open feedback</strong>
+                <ul>{openFeedback.map(entry => <li key={entry.id}><button className="row-link" data-activity="Review open feedback" onClick={() => onOpen(entry)}>{entry.title}</button></li>)}</ul>
+              </div>}
+            </details>;
+          })}
+        </div>
+      </details>;
+    })}</div>
+  </section>;
+}

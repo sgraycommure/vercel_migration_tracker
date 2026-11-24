@@ -7,20 +7,21 @@ export const tools = [
 ] as const;
 
 export type ToolKey = (typeof tools)[number]["key"];
-export type Kind = "tool" | "feature" | "metric" | "feedback" | "plan" | "test";
-export type Tab = "overview" | "catalog" | "feedback" | "plan" | "test";
+export type Kind = "tool" | "feature" | "metric" | "feedback" | "plan" | "test" | "launch";
+export type Tab = "overview" | "catalog" | "feedback" | "plan" | "test" | "launch";
 
 const catalogStatuses = ["Implemented", "Needs verification", "Data gap", "Removed", "Planned"];
 export const statuses: Record<Kind, string[]> = {
   tool: catalogStatuses, feature: catalogStatuses, metric: catalogStatuses,
   feedback: ["New", "Triaged", "Resolved"],
   plan: ["Backlog", "Planned", "In progress", "Ready for testing", "Shipped"],
-  test: ["Started", "Passed", "Failed", "Blocked"]
+  test: ["Started", "Passed", "Failed", "Blocked"],
+  launch: ["Open", "Complete"]
 };
 
 export const labels: Record<Kind, string> = {
   tool: "Tool", feature: "Feature", metric: "Metric", feedback: "Feedback",
-  plan: "Build plan", test: "Test action"
+  plan: "Build plan", test: "Test action", launch: "Checklist item"
 };
 
 export type Entry = {
@@ -63,3 +64,7 @@ export function validLink(value: string | null) {
     return null;
   }
 }
+
+export const launchCategories = ["Punch list", "Training", "Office hours", "Testing", "Stakeholder approval", "Communications", "Cutover & support"];
+
+export type Scope = ToolKey | "all";
