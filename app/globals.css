@@ -184,3 +184,6 @@ dialog::backdrop { background: #111c37a6; }
 .activity-more { margin-top: 11px; }
 .outcome-editor { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .outcome-editor .link-button { white-space: nowrap; }
+.inline-check { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.inline-check input { width: 16px; min-height: 16px; accent-color: var(--blue); }
+.catalog-status { min-height: 32px; }

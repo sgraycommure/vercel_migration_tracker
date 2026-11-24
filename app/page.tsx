@@ -9,6 +9,8 @@ import { feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, readFeedbackShee
 import LaunchManagement, { completionStatus } from "./launch-management";
 import { TestingActivity, WorkspaceTesting, type TrackedOutcome } from "./testing-activity";
 
+import ReleaseTesting from "./release-testing";
+
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 const client = url && key ? createClient(url, key, {
@@ -181,19 +183,20 @@ export default function Home() {
     setEntries(current => [entry, ...current.filter(item => item.id !== entry.id)].sort((a, b) => b.created_at.localeCompare(a.created_at)));
   }
 
-  async function toggleChecklist(entry: Entry, checked: boolean) {
-    if (!client || !canManage || pendingChecks.includes(entry.id)) return;
+  async function saveStatus(entry: Entry, nextStatus: string) {
+    if (!client || !canManage || pendingChecks.includes(entry.id) || nextStatus === entry.status) return;
     setPendingChecks(current => [...current, entry.id]);
     try {
-      const result = await client.from(table).update({ status: completionStatus(entry, checked) })
+      const result = await client.from(table).update({ status: nextStatus })
         .eq("id", entry.id).eq("updated_at", entry.updated_at).select().single();
       if (result.error) throw result.error;
       storeEntry(result.data as Entry);
-      setNotice(checked ? "Marked complete." : "Checklist item reopened.");
+      if (catalogKinds.has(entry.kind) && entry.status === "Removed") setRefresh(value => value + 1);
+      setNotice(`${labels[entry.kind]} status saved.`);
     } catch {
-      setNotice("The checklist item could not be updated. The latest checklist has been requested.");
+      setNotice("The status could not be updated. Refreshing the latest record.");
       setRefresh(value => value + 1);
-      logActivity(entry.tool_key, "Launch Management", "Save checklist completion", "Failed");
+      logActivity(entry.tool_key, activityPage, "Save status", "Failed");
     } finally {
       setPendingChecks(current => current.filter(id => id !== entry.id));
     }
@@ -282,7 +285,7 @@ export default function Home() {
   const filtered = tabRows.filter(entry =>
     (!status || entry.status === status) && (!kind || entry.kind === kind)
     && (!tester || entry.actor_email === tester) && (!environment || entry.environment === environment)
-    && (!query || [entry.title, entry.details, entry.area, entry.owner, entry.actor_email, entry.metric_source, entry.feedback_requester, entry.feedback_response, entry.feedback_sheet_status,
+    && (!query || [entry.title, entry.details, entry.area, entry.owner, entry.actor_email, entry.metric_source, entry.feedback_requester, entry.feedback_response,
       tools.find(tool => tool.key === entry.tool_key)?.name].some(value => value?.toLowerCase().includes(query)))
   );
   if (tab === "catalog") filtered.sort((a, b) => (a.area ?? "").localeCompare(b.area ?? "") || a.title.localeCompare(b.title));
@@ -296,6 +299,7 @@ export default function Home() {
 
   function onSaved(entry: Entry) {
     storeEntry(entry);
+    if (catalogKinds.has(entry.kind)) setRefresh(value => value + 1);
     if (tab !== "launch" && tab !== "testing") navigate(entry.kind === "feature" || entry.kind === "metric" ? "catalog" : entry.kind as Tab, scope);
     setDraft(null);
     setNotice(`${labels[entry.kind]} saved.`);
@@ -314,8 +318,8 @@ export default function Home() {
         </button>
         <button className={tab === "launch" ? "side-link active" : "side-link"} aria-current={tab === "launch" ? "page" : undefined}
           onClick={() => navigate("launch", "all")}><span className="all-icon" aria-hidden="true">☑</span> Launch Management</button>
-        {isAdmin && <button className={tab === "testing" ? "side-link active" : "side-link"} aria-current={tab === "testing" ? "page" : undefined}
-          onClick={() => navigate("testing", "all")}><span className="all-icon" aria-hidden="true">✓</span> Testing</button>}
+        <button className={tab === "testing" ? "side-link active" : "side-link"} aria-current={tab === "testing" ? "page" : undefined}
+          onClick={() => navigate("testing", "all")}><span className="all-icon" aria-hidden="true">✓</span> Testing</button>
       </div>
       <div className="side-group">
         <p className="side-label">TOOLS</p>
@@ -350,10 +354,14 @@ export default function Home() {
         {notice && <p className="notice" role="status">{notice}</p>}
         {problem && <p className="alert" role="alert">{problem} <button className="link-button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></p>}
         {loading && <p role="status" className="muted">Loading tracker…</p>}
-        {tab === "testing" && isAdmin && client ? <WorkspaceTesting db={client} onOpen={openTest} />
+        {tab === "testing" ? <>
+          <ReleaseTesting entries={entries} managing={canManage} pending={pendingChecks} onOpen={setFocused}
+            onStatus={(entry, status) => void saveStatus(entry, status)} />
+          {isAdmin && client && <WorkspaceTesting db={client} onOpen={openTest} />}
+        </>
         : tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} pending={pendingChecks}
           onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry })}
-          onCheck={(entry, checked) => void toggleChecklist(entry, checked)} onOpen={setFocused} />
+          onCheck={(entry, checked) => void saveStatus(entry, completionStatus(entry, checked))} onOpen={setFocused} />
         : tab === "overview" ? <>
           <section className="stats" aria-label="Tracking totals">
             <Stat title="Catalog entries" value={catalog.length} detail={`${catalog.filter(entry => entry.kind === "feature").length} features · ${catalog.filter(entry => entry.kind === "metric").length} metrics`} onClick={() => navigate("catalog")} />
@@ -401,7 +409,7 @@ export default function Home() {
             {tab === "catalog" ? canManage && <>
               <button className="secondary" onClick={() => setDraft({ kind: "feature" })}>Add feature</button>
               <button className="secondary" onClick={() => setDraft({ kind: "metric" })}>Add metric</button>
-            </> : tab !== "test" && tab !== "testing" && <button className="primary" onClick={() => setDraft({ kind: tab })}>Add {labels[tab].toLowerCase()}</button>}
+            </> : tab !== "test" && <button className="primary" onClick={() => setDraft({ kind: tab })}>Add {labels[tab].toLowerCase()}</button>}
           </div></div>
           {tab === "feedback" && syncProblem && <p className="alert" role="alert">{syncProblem}</p>}
           <div className="filters">
@@ -415,7 +423,8 @@ export default function Home() {
           </div>
           {tab === "catalog" || tab === "feedback" ? <ToolGroups key={`${tab}-${scope}`}
             scope={scope} tab={tab} rows={filtered} items={itemById} onOpen={setFocused}
-            filterKind={kind} filtering={!!(query || kind || status)} />
+            filterKind={kind} filtering={!!(query || kind || status)}
+            catalogStatus={canManage ? { pending: pendingChecks, save: saveStatus } : undefined} />
             : <EntryTable rows={filtered} visibleTool={scope === "all"} onOpen={setFocused} items={itemById} usage={tab === "test"}
               empty={tabRows.length ? "No entries match these filters." : "No entries recorded yet."} />}
         </section>}
@@ -434,9 +443,11 @@ function Stat({ title, detail, value, onClick }: { title: string; detail: string
   return <button className="stat" onClick={onClick}><span>{title}</span><strong>{value}</strong><small>{detail}</small></button>;
 }
 
-function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen }: {
+type CatalogStatus = { pending: string[]; save: (entry: Entry, status: string) => Promise<void> };
+
+function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, catalogStatus }: {
   scope: Scope; tab: "catalog" | "feedback"; rows: Entry[]; filterKind: string; filtering: boolean;
-  items: Map<string, Entry>; onOpen: (entry: Entry) => void;
+  items: Map<string, Entry>; onOpen: (entry: Entry) => void; catalogStatus?: CatalogStatus;
 }) {
   const [expanded, setExpanded] = useState<Partial<Record<ToolKey, boolean>>>({});
   const groups = tools.filter(tool => scope === "all" || tool.key === scope);
@@ -459,10 +470,10 @@ function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen }: 
                 empty={filtering ? "No feedback matches these filters." : "No feedback recorded for this tool."} />
             : <>
               {filterKind !== "metric" && <section><h4>Features</h4>
-                <EntryTable rows={features} visibleTool={false} items={items} onOpen={onOpen} empty="No matching features." />
+                <EntryTable rows={features} visibleTool={false} catalogStatus={catalogStatus} items={items} onOpen={onOpen} empty="No matching features." />
               </section>}
               {filterKind !== "feature" && <section><h4>Metrics</h4>
-                <EntryTable rows={metrics} visibleTool={false} variant="metric" items={items} onOpen={onOpen} empty="No matching metrics." />
+                <EntryTable rows={metrics} visibleTool={false} variant="metric" catalogStatus={catalogStatus} items={items} onOpen={onOpen} empty="No matching metrics." />
               </section>}
             </>)}
         </div>
@@ -471,8 +482,8 @@ function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen }: 
   </div>;
 }
 
-function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, empty = "No follow-up entries." }: {
-  rows: Entry[]; visibleTool: boolean; usage?: boolean; variant?: "metric" | "feedback"; items: Map<string, Entry>; onOpen: (entry: Entry) => void; empty?: string;
+function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogStatus, empty = "No follow-up entries." }: {
+  rows: Entry[]; visibleTool: boolean; usage?: boolean; variant?: "metric" | "feedback"; items: Map<string, Entry>; onOpen: (entry: Entry) => void; empty?: string; catalogStatus?: CatalogStatus;
 }) {
   const showTest = usage || rows[0]?.kind === "test";
   const showPlan = rows[0]?.kind === "plan";
@@ -486,7 +497,10 @@ function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, empty = 
       <td><button className="row-link" onClick={() => onOpen(entry)}>{entry.title}</button>
         {entry.parent_id && <small className="subline">{items.get(entry.parent_id)?.title}</small>}</td>
       {visibleTool && <td>{tools.find(tool => tool.key === entry.tool_key)?.name}</td>}
-      <td><Badge>{entry.status}</Badge>{entry.feedback_sheet_status && <small className="subline">{entry.feedback_sheet_status}</small>}</td>
+      <td>{catalogStatus && catalogKinds.has(entry.kind)
+        ? <select className="catalog-status" aria-label={`Status for ${entry.title}`} value={entry.status} disabled={catalogStatus.pending.includes(entry.id)}
+            onChange={event => void catalogStatus.save(entry,event.target.value)}>{statuses[entry.kind].map(value => <option key={value}>{value}</option>)}</select>
+        : <Badge>{entry.status}</Badge>}</td>
       {showTest ? <><td>{entry.actor_email ?? "—"}</td><td>{entry.environment}</td><td className="nowrap">{stamp.format(new Date(entry.created_at))}</td></>
         : showPlan ? <><td>{entry.owner ?? "—"}</td><td>{entry.due_date ? day.format(new Date(entry.due_date)) : "—"}</td></>
         : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td><td>
@@ -523,7 +537,6 @@ function EntryDetails({ entry, parent, close, edit, add }: {
       <p className="details-copy">{entry.details || "No notes added."}</p>
       {entry.metric_source && <p><strong>Metric source</strong> {entry.metric_source}</p>}
       {entry.feedback_requester && <p><strong>Requested by</strong> {entry.feedback_requester}</p>}
-      {entry.feedback_sheet_status && <p><strong>Sheet status</strong> {entry.feedback_sheet_status}</p>}
       {entry.feedback_response && <p className="details-copy"><strong>Response</strong> {entry.feedback_response}</p>}
       {entry.feedback_sheet_present === false && <p className="muted">This entry was removed from the source sheet.</p>}
       {parent && <p><strong>Related entry</strong> {parent.title}</p>}

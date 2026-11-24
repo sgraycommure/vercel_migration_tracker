@@ -7,7 +7,7 @@ export const tools = [
 ] as const;
 
 export type ToolKey = (typeof tools)[number]["key"];
-export type Kind = "tool" | "feature" | "metric" | "feedback" | "plan" | "test" | "launch";
+export type Kind = "tool" | "feature" | "metric" | "feedback" | "plan" | "test" | "launch" | "qa";
 export type Tab = "overview" | "catalog" | "feedback" | "plan" | "test" | "launch" | "testing";
 
 const catalogStatuses = ["Implemented", "Needs verification", "Data gap", "Removed", "Planned"];
@@ -16,12 +16,12 @@ export const statuses: Record<Kind, string[]> = {
   feedback: ["New", "Triaged", "Resolved"],
   plan: ["Backlog", "Planned", "In progress", "Ready for testing", "Shipped"],
   test: ["Started", "Passed", "Failed", "Blocked"],
-  launch: ["Open", "Complete"]
+  launch: ["Open", "Complete"], qa: ["Open", "Passed", "Failed", "Blocked"]
 };
 
 export const labels: Record<Kind, string> = {
   tool: "Tool", feature: "Feature", metric: "Metric", feedback: "Feedback",
-  plan: "Build plan", test: "Test action", launch: "Checklist item"
+  plan: "Build plan", test: "Test action", launch: "Checklist item", qa: "Release test"
 };
 
 export type Entry = {
