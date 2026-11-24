@@ -182,3 +182,5 @@ dialog::backdrop { background: #111c37a6; }
 .launch-feedback { margin: 9px 12px; }
 .activity-note { margin-bottom: 11px; }
 .activity-more { margin-top: 11px; }
+.outcome-editor { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.outcome-editor .link-button { white-space: nowrap; }

@@ -7,7 +7,7 @@ import { catalogKinds, day, labels, launchCategories, stamp, statuses, table, to
 import { feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, readFeedbackSheet } from "./feedback-sheet";
 
 import LaunchManagement, { completionStatus } from "./launch-management";
-import { TestingActivity, type TrackedOutcome } from "./testing-activity";
+import { TestingActivity, WorkspaceTesting, type TrackedOutcome } from "./testing-activity";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -72,7 +72,7 @@ export default function Home() {
   const lastView = useRef("");
   const userId = session?.user.id;
   const isAdmin = /^admin$/i.test(role ?? "");
-  const activityPage = tab === "launch" ? "Launch Management" : tabs.find(item => item.key === tab)?.name ?? "Overview";
+  const activityPage = tab === "launch" ? "Launch Management" : tab === "testing" ? "Usage tracker" : tabs.find(item => item.key === tab)?.name ?? "Overview";
   const canRecord = !!userId && !!role && checkedUser === userId;
   const canManage = /^(admin|exec)$/i.test(role ?? "");
 
@@ -276,7 +276,7 @@ export default function Home() {
   const catalog = scoped.filter(entry => catalogKinds.has(entry.kind));
   const currentTab = tabs.find(item => item.key === tab);
   const tabRows = tab === "catalog" ? catalog : scoped.filter(entry => entry.kind === tab);
-  const statusOptions = tab === "catalog" ? statuses.feature : tab === "overview" ? [] : statuses[tab];
+  const statusOptions = tab === "catalog" ? statuses.feature : tab === "overview" || tab === "testing" ? [] : statuses[tab];
   const people = [...new Set(tests.map(entry => entry.actor_email).filter((email): email is string => !!email))].sort();
   const query = search.trim().toLowerCase();
   const filtered = tabRows.filter(entry =>
@@ -289,9 +289,14 @@ export default function Home() {
   const itemById = new Map(entries.map(entry => [entry.id, entry]));
   const canEdit = (entry: Entry) => entry.kind !== "tool" && entry.kind !== "test" && !entry.feedback_sheet_tab && (canManage || entry.created_by === userId);
 
+  function openTest(id: string, outcome: string) {
+    const entry = itemById.get(id);
+    setFocused(entry ? { ...entry, status: outcome } : null);
+  }
+
   function onSaved(entry: Entry) {
     storeEntry(entry);
-    if (tab !== "launch") navigate(entry.kind === "feature" || entry.kind === "metric" ? "catalog" : entry.kind as Tab, scope);
+    if (tab !== "launch" && tab !== "testing") navigate(entry.kind === "feature" || entry.kind === "metric" ? "catalog" : entry.kind as Tab, scope);
     setDraft(null);
     setNotice(`${labels[entry.kind]} saved.`);
   }
@@ -304,11 +309,13 @@ export default function Home() {
       </button>
       <div className="side-group">
         <p className="side-label">WORKSPACE</p>
-        <button className={scope === "all" && tab !== "launch" ? "side-link active" : "side-link"} aria-current={scope === "all" && tab !== "launch" ? "page" : undefined} onClick={() => navigate("overview", "all")}>
+        <button className={scope === "all" && tab !== "launch" && tab !== "testing" ? "side-link active" : "side-link"} aria-current={scope === "all" && tab !== "launch" && tab !== "testing" ? "page" : undefined} onClick={() => navigate("overview", "all")}>
           <span className="all-icon" aria-hidden="true">▦</span> All tools
         </button>
         <button className={tab === "launch" ? "side-link active" : "side-link"} aria-current={tab === "launch" ? "page" : undefined}
           onClick={() => navigate("launch", "all")}><span className="all-icon" aria-hidden="true">☑</span> Launch Management</button>
+        {isAdmin && <button className={tab === "testing" ? "side-link active" : "side-link"} aria-current={tab === "testing" ? "page" : undefined}
+          onClick={() => navigate("testing", "all")}><span className="all-icon" aria-hidden="true">✓</span> Testing</button>}
       </div>
       <div className="side-group">
         <p className="side-label">TOOLS</p>
@@ -323,27 +330,28 @@ export default function Home() {
     </aside>
     <main id="main-content">
       <header className="topbar">
-        <span>{scope === "all" ? "Workspace" : "Tools"} <span aria-hidden="true" className="slash">/</span> <strong>{tab === "launch" ? "Launch Management" : selectedTool?.name ?? "All tools"}</strong></span>
+        <span>{scope === "all" ? "Workspace" : "Tools"} <span aria-hidden="true" className="slash">/</span> <strong>{tab === "launch" ? "Launch Management" : tab === "testing" ? "Testing" : selectedTool?.name ?? "All tools"}</strong></span>
         <button className="primary" onClick={() => setDraft({ kind: "test" })}>＋ Log test action</button>
       </header>
       <div className="content">
         <section className="hero">
           <p className="eyebrow">{selectedTool ? "Tool overview" : "Operations portfolio"}</p>
-          <h1>{tab === "launch" ? "Launch Management" : selectedTool?.name ?? "Tooling portfolio"}</h1>
-          <p>{tab === "launch" ? "Track the work each tool needs before rollout." : summary?.details ?? "Review what’s built, what’s planned, and what users have tested."}</p>
+          <h1>{tab === "launch" ? "Launch Management" : tab === "testing" ? "Testing" : selectedTool?.name ?? "Tooling portfolio"}</h1>
+          <p>{tab === "launch" ? "Track the work each tool needs before rollout." : tab === "testing" ? "Review activity and record test outcomes by tool." : summary?.details ?? "Review what’s built, what’s planned, and what users have tested."}</p>
           {summary && <div className="hero-links">
             {validLink(summary.deployment_url) && <a href={validLink(summary.deployment_url)!} target="_blank" rel="noreferrer">Open production ↗</a>}
             <a href={`https://vercel.com/sgray-5128/${selectedTool?.repo}`} target="_blank" rel="noreferrer">Vercel deployments ↗</a>
             {validLink(summary.source_url) && <a href={validLink(summary.source_url)!} target="_blank" rel="noreferrer">GitHub ↗</a>}
           </div>}
         </section>
-        {tab !== "launch" && <nav className="tabs" aria-label="Tracker sections">
+        {tab !== "launch" && tab !== "testing" && <nav className="tabs" aria-label="Tracker sections">
           {tabs.map(item => <button key={item.key} aria-current={item.key === tab ? "page" : undefined} onClick={() => navigate(item.key)}>{item.name}</button>)}
         </nav>}
         {notice && <p className="notice" role="status">{notice}</p>}
         {problem && <p className="alert" role="alert">{problem} <button className="link-button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></p>}
         {loading && <p role="status" className="muted">Loading tracker…</p>}
-        {tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} pending={pendingChecks}
+        {tab === "testing" && isAdmin && client ? <WorkspaceTesting db={client} onOpen={openTest} />
+        : tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} pending={pendingChecks}
           onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry })}
           onCheck={(entry, checked) => void toggleChecklist(entry, checked)} onOpen={setFocused} />
         : tab === "overview" ? <>
@@ -372,12 +380,12 @@ export default function Home() {
           <section className="section">
             <div className="section-head"><h2>Recent testing</h2><button className="secondary" onClick={() => navigate("test")}>View usage tracker</button></div>
             {isAdmin && client ? <TestingActivity key={scope} db={client} scope={scope} compact
-              onOpen={id => setFocused(itemById.get(id) ?? null)} /> : <EntryTable rows={tests.slice(0, 5)}
+              onOpen={openTest} /> : <EntryTable rows={tests.slice(0, 5)}
               visibleTool={scope === "all"} onOpen={setFocused} items={itemById} empty="No test actions recorded yet." />}
           </section>
         </> : tab === "test" && isAdmin && client ? <section className="section">
           <div className="section-head"><h2>Usage tracker</h2></div>
-          <TestingActivity key={scope} db={client} scope={scope} onOpen={id => setFocused(itemById.get(id) ?? null)} />
+          <TestingActivity key={scope} db={client} scope={scope} onOpen={openTest} />
         </section> : <section className="section">
           <div className="section-head"><div><h2>{currentTab?.name}</h2>
             {tab === "test" && <p className="muted">Test actions recorded by signed-in users, with deployment, outcome, and notes.</p>}
@@ -393,7 +401,7 @@ export default function Home() {
             {tab === "catalog" ? canManage && <>
               <button className="secondary" onClick={() => setDraft({ kind: "feature" })}>Add feature</button>
               <button className="secondary" onClick={() => setDraft({ kind: "metric" })}>Add metric</button>
-            </> : tab !== "test" && <button className="primary" onClick={() => setDraft({ kind: tab })}>Add {labels[tab].toLowerCase()}</button>}
+            </> : tab !== "test" && tab !== "testing" && <button className="primary" onClick={() => setDraft({ kind: tab })}>Add {labels[tab].toLowerCase()}</button>}
           </div></div>
           {tab === "feedback" && syncProblem && <p className="alert" role="alert">{syncProblem}</p>}
           <div className="filters">

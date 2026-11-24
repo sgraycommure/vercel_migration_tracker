@@ -8,7 +8,7 @@ export const tools = [
 
 export type ToolKey = (typeof tools)[number]["key"];
 export type Kind = "tool" | "feature" | "metric" | "feedback" | "plan" | "test" | "launch";
-export type Tab = "overview" | "catalog" | "feedback" | "plan" | "test" | "launch";
+export type Tab = "overview" | "catalog" | "feedback" | "plan" | "test" | "launch" | "testing";
 
 const catalogStatuses = ["Implemented", "Needs verification", "Data gap", "Removed", "Planned"];
 export const statuses: Record<Kind, string[]> = {
