@@ -24,7 +24,7 @@ const tabs: { key: Tab; name: string }[] = [
   { key: "test", name: "Usage tracker" }
 ];
 
-type Draft = { kind: Kind; entry?: Entry; parent?: Entry; tool?: ToolKey };
+type Draft = { kind: Kind; entry?: Entry; parent?: Entry; tool?: ToolKey; launchCategory?: string };
 const activitySessionKey = "tooling-tracker-browser-session";
 const environmentName = ({ preview: "Preview", production: "Production", development: "Local" } as Record<string, string>)[process.env.NEXT_PUBLIC_VERCEL_ENV ?? ""] ?? null;
 
@@ -494,7 +494,7 @@ export default function Home() {
           {isAdmin && client && <WorkspaceTesting db={client} onOpen={openTest} />}
         </>
         : tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} showBuildPlans={showSources} pending={pendingChecks}
-          onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry, tool: entry.tool_key })}
+          onAdd={(tool, launchCategory) => setDraft({ kind: "launch", tool, launchCategory })} onEdit={entry => setDraft({ kind: entry.kind, entry, tool: entry.tool_key })}
           onDelete={entry => confirmDeletion([entry], entry.tool_key)}
           onCheck={(entry, checked) => void saveStatus(entry, completionStatus(entry, checked))} onOpen={setFocused} />
         : tab === "overview" ? <>
@@ -520,14 +520,16 @@ export default function Home() {
             <Stat title="Open feedback" value={feedback.length} detail="Pending" onClick={() => navigate("feedback")} />
             <Stat title="Logged test results" value={tests.length} detail={`${people.length} ${people.length === 1 ? "tester" : "testers"} · ${tests.filter(entry => entry.status === "Passed").length} passed`} onClick={() => navigate("test")} />
           </section>
-          <ReadinessPlan key={scope} entries={scoped} scope={scope} managing={canManage} busy={loading || readinessBusy}
-            onAdd={() => setDraft({ kind: "launch", tool: scope === "all" ? undefined : scope })}
-            onEdit={copies => openEditor(copies[0])}
-            onDelete={copies => confirmDeletion(copies, scope === "all" ? null : scope)}
-            onCheck={(copies, checked) => copies.length === 1
-              ? void saveStatus(copies[0], completionStatus(copies[0], checked))
-              : void syncReadiness(copies, checked)}
-            onMove={moveReadiness} onOpen={setFocused} pending={pendingChecks} />
+          {(scope === "all" ? ["readiness"] : ["readiness", "punch"]).map(view =>
+            <ReadinessPlan key={`${scope}-${view}`} entries={scoped} scope={scope} punchOnly={view === "punch"}
+              managing={canManage} busy={loading || readinessBusy}
+              onAdd={launchCategory => setDraft({ kind: "launch", tool: scope === "all" ? undefined : scope, launchCategory })}
+              onEdit={copies => openEditor(copies[0])}
+              onDelete={copies => confirmDeletion(copies, scope === "all" ? null : scope)}
+              onCheck={(copies, checked) => copies.length === 1
+                ? void saveStatus(copies[0], completionStatus(copies[0], checked))
+                : void syncReadiness(copies, checked)}
+              onMove={moveReadiness} onOpen={setFocused} pending={pendingChecks} />)}
           {scope !== "all" && <section className="section">
             <div className="section-head"><h2>Evaluation follow-up</h2><button className="secondary" onClick={() => navigate("catalog")}>View catalog</button></div>
             <EntryTable rows={catalog.filter(entry => ["Needs verification", "Data gap"].includes(entry.status))} visibleTool={false} onOpen={setFocused} items={itemById} />
@@ -838,7 +840,7 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
           {mixedStatus && <option value="">Varies by tool</option>}{statuses[kind].map(value => <option key={value}>{value}</option>)}</select></label>
         {kind === "test" && <label>Environment<select name="environment"><option>Preview</option><option>Production</option><option>Local</option></select></label>}
         {catalogKinds.has(kind) && <label>Area<input name="area" maxLength={80} defaultValue={entry?.area ?? ""} /></label>}
-        {kind === "launch" && <label>Category<select name="area" defaultValue={mixedCategory ? "" : entry?.area ?? (scope === "all" && !draft.tool ? "Training" : "Punch list")}>
+        {kind === "launch" && <label>Category<select name="area" defaultValue={mixedCategory ? "" : entry?.area ?? draft.launchCategory ?? (scope === "all" && !draft.tool ? "Training" : "Punch list")}>
           {mixedCategory && <option value="">Varies by tool</option>}{launchCategories.map(category => <option key={category}>{category}</option>)}</select></label>}
         {(kind === "plan" || kind === "launch" || kind === "feature") && <>
           <label>Owner<input name="owner" maxLength={160} defaultValue={entry?.owner ?? ""} /></label>

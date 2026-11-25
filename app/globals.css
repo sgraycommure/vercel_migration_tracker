@@ -239,3 +239,5 @@ dialog::backdrop { background: #111c37a6; }
   .readiness-list[data-managing="true"] > li > .readiness-controls { grid-column: 3 / -1; margin-left: 0; }
   .readiness-list .launch-item { min-width: 0; }
 }
+
+.readiness-category-filter { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }

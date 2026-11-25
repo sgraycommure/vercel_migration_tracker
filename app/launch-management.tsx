@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { day, launchCategories, tools, type Entry, type ToolKey } from "./model";
 
-import { readinessItems } from "./readiness-plan";
+import { ReadinessCategoryFilter, readinessItems } from "./readiness-plan";
 
 const wave: Record<ToolKey, number> = { launch: 1, px: 2, "customer-ops": 2, capacity: 3, efficiency: 3 };
 
@@ -35,12 +36,13 @@ export default function LaunchManagement({ entries, managing, showBuildPlans, pe
   managing: boolean;
   showBuildPlans: boolean;
   pending: string[];
-  onAdd: (tool: ToolKey) => void;
+  onAdd: (tool: ToolKey, category?: string) => void;
   onEdit: (entry: Entry) => void;
   onDelete: (entry: Entry) => void;
   onCheck: (entry: Entry, checked: boolean) => void;
   onOpen: (entry: Entry) => void;
 }) {
+  const [categoryFilter, setCategoryFilter] = useState("");
   const featureLabel = showBuildPlans ? "Planned features and builds" : "Planned features";
 
   function checklist(rows: Entry[]) {
@@ -70,7 +72,10 @@ export default function LaunchManagement({ entries, managing, showBuildPlans, pe
   }
 
   return <section className="section" aria-label="Launch management">
-    <div className="section-head"><div><h2>Readiness by tool</h2><p className="muted">Completion uses the catalog and readiness checklist below.</p></div></div>
+    <div className="section-head">
+      <div><h2>Readiness by tool</h2><p className="muted">Completion uses the catalog and readiness checklist below.</p></div>
+      <ReadinessCategoryFilter value={categoryFilter} onChange={setCategoryFilter} extraCategory={featureLabel} />
+    </div>
     <div className="launch-tools">{[...tools].sort((a,b) => wave[a.key] - wave[b.key]).map(tool => {
       const scoped = entries.filter(entry => entry.tool_key === tool.key);
       const { features } = launchProgressRows(scoped);
@@ -85,13 +90,14 @@ export default function LaunchManagement({ entries, managing, showBuildPlans, pe
         </summary>
         <div className="launch-tool-body">
           <div className="launch-progress-grid"><LaunchProgress label={featureLabel} rows={features} /><LaunchProgress label="Readiness preparation" rows={readiness} /></div>
-          {managing && <div className="actions"><button className="primary" onClick={() => onAdd(tool.key)}>Add checklist item</button></div>}
-          <details className="launch-category"><summary data-activity={`Expand ${featureLabel.toLowerCase()}`}>{featureLabel} <small>{features.filter(completed).length}/{features.length}</small></summary>
+          {managing && <div className="actions"><button className="primary" onClick={() => onAdd(tool.key, launchCategories.find(category => category === categoryFilter))}>Add checklist item</button></div>}
+          {(!categoryFilter || categoryFilter === featureLabel) && <details className="launch-category" key={categoryFilter}
+            open={categoryFilter === featureLabel || undefined}><summary data-activity={`Expand ${featureLabel.toLowerCase()}`}>{featureLabel} <small>{features.filter(completed).length}/{features.length}</small></summary>
             {features.length ? checklist(features) : <p className="empty">No {featureLabel.toLowerCase()}.</p>}
-          </details>
-          {launchCategories.map(category => {
+          </details>}
+          {launchCategories.filter(category => !categoryFilter || category === categoryFilter).map(category => {
             const rows = readiness.filter(entry => entry.area === category);
-            return <details className="launch-category" key={category}>
+            return <details className="launch-category" key={`${category}-${categoryFilter}`} open={categoryFilter === category || undefined}>
               <summary data-activity={`Expand ${category} checklist`}>{category} <small>{rows.filter(completed).length}/{rows.length}</small></summary>
               {rows.length ? checklist(rows) : <p className="empty">No checklist items in this category.</p>}
               {category === "Punch list" && openFeedback.length > 0 && <div className="launch-feedback">

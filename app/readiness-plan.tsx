@@ -1,5 +1,5 @@
 import { useRef, useState, type DragEvent, type MouseEvent } from "react";
-import { day, punchListSummaryGroup, tools, type Entry, type Scope } from "./model";
+import { day, launchCategories, punchListSummaryGroup, tools, type Entry, type Scope } from "./model";
 
 type ReadinessItem = { key: string; entries: Entry[]; position: number; created: string };
 
@@ -21,21 +21,42 @@ export function readinessItems(entries: Entry[], scope: Scope): ReadinessItem[] 
   return [...groups.values()].sort((a, b) => a.position - b.position || a.created.localeCompare(b.created) || a.key.localeCompare(b.key));
 }
 
-export default function ReadinessPlan({ entries, scope, managing, busy, pending, onAdd, onEdit, onDelete, onOpen, onCheck, onMove }: {
+export function ReadinessCategoryFilter({ value, onChange, extraCategory }: {
+  value: string;
+  onChange: (category: string) => void;
+  extraCategory?: string;
+}) {
+  const categories = extraCategory ? [extraCategory, ...launchCategories] : launchCategories;
+  return <label className="readiness-category-filter">Category
+    <select value={value} onChange={event => onChange(event.target.value)}>
+      <option value="">All categories</option>
+      {categories.map(category => <option key={category}>{category}</option>)}
+    </select>
+  </label>;
+}
+
+export default function ReadinessPlan({ entries, scope, punchOnly = false, managing, busy, pending, onAdd, onEdit, onDelete, onOpen, onCheck, onMove }: {
   entries: Entry[];
   scope: Scope;
+  punchOnly?: boolean;
   managing: boolean;
   busy: boolean;
   pending: string[];
-  onAdd: () => void;
+  onAdd: (category?: string) => void;
   onEdit: (entries: Entry[]) => void;
   onDelete: (entries: Entry[]) => void;
   onOpen: (entry: Entry) => void;
   onCheck: (entries: Entry[], checked: boolean) => void;
   onMove: (item: string, adjacent: string, placeAfter?: boolean) => Promise<boolean>;
 }) {
-  const items = readinessItems(entries, scope).filter(item => scope !== "all" ||
-    item.key === punchListSummaryGroup || item.entries.some(entry => entry.area !== "Punch list"));
+  const [category, setCategory] = useState("");
+  const items = readinessItems(entries, scope).filter(item => {
+    if (punchOnly) return item.key !== punchListSummaryGroup && item.entries[0].readiness_group !== punchListSummaryGroup
+      && item.entries.some(entry => entry.area === "Punch list");
+    if (scope === "all" && item.key !== punchListSummaryGroup && item.entries.every(entry => entry.area === "Punch list")) return false;
+    return !category || item.entries.some(entry => entry.area === category);
+  });
+  const title = punchOnly ? "Punch list" : scope === "all" ? "Launch Readiness Plan" : "Readiness plan";
   const list = useRef<HTMLUListElement>(null);
   const [draggedKey, setDraggedKey] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ key: string; after: boolean } | null>(null);
@@ -60,7 +81,7 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
 
   async function move(event: MouseEvent<HTMLButtonElement>, key: string, adjacent: string, direction: number) {
     const restoreFocus = document.activeElement === event.currentTarget;
-    if (!await onMove(key, adjacent, scope === "all" ? direction > 0 : undefined) || !restoreFocus) return;
+    if (!await onMove(key, adjacent, scope === "all" || punchOnly || category ? direction > 0 : undefined) || !restoreFocus) return;
     requestAnimationFrame(() => {
       const row = list.current?.querySelector(`[data-readiness-key="${key}"]`);
       const sameDirection = row?.querySelector<HTMLButtonElement>(`[data-move="${direction}"]:not(:disabled)`);
@@ -69,13 +90,22 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
     });
   }
 
-  return <section className="section" aria-label={scope === "all" ? "Launch Readiness Plan" : "Readiness plan"}>
+  return <section className="section" aria-label={title}>
     <div className="section-head">
       <div>
-        <h2>{scope === "all" ? "Launch Readiness Plan" : "Readiness plan"}</h2>
+        <h2>{title}</h2>
         {scope === "all" && <p className="muted">Edits apply to all tools listed on the item.</p>}
       </div>
-      {managing && <button className="primary" disabled={busy} onClick={onAdd}>Add checklist item</button>}
+      <div className="actions">
+        {!punchOnly && <ReadinessCategoryFilter value={category} onChange={value => {
+          clearDrag();
+          setCategory(value);
+          if (list.current) list.current.scrollTop = 0;
+        }} />}
+        {managing && <button className="primary" disabled={busy} onClick={() => onAdd(punchOnly ? "Punch list" : category || undefined)}>
+          {punchOnly ? "Add punch list item" : "Add checklist item"}
+        </button>}
+      </div>
     </div>
     {items.length > 0 && <div className="readiness-column-head" data-managing={managing}>
       <span>Checklist item</span><span>Latest status</span>
@@ -153,6 +183,6 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
             aria-label={`Delete ${title}`} onClick={() => onDelete(item.entries)}>Delete</button>
         </div>}
       </li>;
-    })}</ul> : <p className="empty">No readiness items yet.</p>}
+    })}</ul> : <p className="empty">{punchOnly ? "No punch list items yet." : category ? "No readiness items in this category." : "No readiness items yet."}</p>}
   </section>;
 }
