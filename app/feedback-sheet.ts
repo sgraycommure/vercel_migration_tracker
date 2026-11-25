@@ -22,6 +22,8 @@ type SheetProperties = { sheetId: number; title: string };
 type SheetFeedback = { row: number; title: string; requester: string; notes: string; status: string; response: string };
 type FeedbackTab = { tool: ToolKey; gid: number; name: string; rows: SheetFeedback[] };
 
+export class SheetsAuthorizationError extends Error {}
+
 export async function readFeedbackSheet(token: string): Promise<FeedbackTab[]> {
   async function request<T>(path: string, query: URLSearchParams): Promise<T> {
     const result = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}${path}?${query}`, {
@@ -29,9 +31,24 @@ export async function readFeedbackSheet(token: string): Promise<FeedbackTab[]> {
       cache: "no-store",
       signal: AbortSignal.timeout(20_000)
     });
-    if (result.status === 401) throw new Error("Google access expired. Reconnect to refresh feedback.");
-    if (result.status === 403) throw new Error("Google denied access. Check that this account can open the feedback sheet and that the Sheets API is enabled.");
-    if (!result.ok) throw new Error("Google Sheets could not be read. Try again.");
+    if (result.status === 401) {
+      throw new SheetsAuthorizationError("Google Sheets access expired. Select Sync Google Sheet to reconnect.");
+    }
+    if (result.status === 403) {
+      const body = await result.json().catch(() => null);
+      const reasons = [
+        ...(body?.error?.details ?? []).map((detail: { reason?: string }) => detail.reason),
+        ...(body?.error?.errors ?? []).map((detail: { reason?: string }) => detail.reason)
+      ];
+      if (reasons.includes("SERVICE_DISABLED") || reasons.includes("accessNotConfigured")) {
+        throw new Error("Enable the Google Sheets API in the Google Cloud project used for tracker sign-in, then retry.");
+      }
+      if (reasons.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT") || reasons.includes("insufficientPermissions")) {
+        throw new SheetsAuthorizationError("Google Sheets read permission is required. Select Sync Google Sheet to reconnect.");
+      }
+      throw new Error("Google denied access to the workbook. Check that the connected account can open Vercel Migration Feedback.");
+    }
+    if (!result.ok) throw new Error(`Google Sheets could not be read (HTTP ${result.status}). Try again.`);
     return result.json();
   }
 

@@ -212,3 +212,6 @@ dialog::backdrop { background: #111c37a6; }
   .readiness-list .launch-item { min-width: 75%; }
   .readiness-controls { margin-left: 28px; }
 }
+
+.danger { color: #fff; background: #a92330; border-color: #a92330; }
+.danger:hover:not(:disabled) { background: #891b26; }

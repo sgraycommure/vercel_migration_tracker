@@ -21,7 +21,7 @@ export function readinessItems(entries: Entry[], scope: Scope): ReadinessItem[] 
   return [...groups.values()].sort((a, b) => a.position - b.position || a.created.localeCompare(b.created) || a.key.localeCompare(b.key));
 }
 
-export default function ReadinessPlan({ entries, scope, managing, busy, pending, onAdd, onEdit, onOpen, onCheck, onMove }: {
+export default function ReadinessPlan({ entries, scope, managing, busy, pending, onAdd, onEdit, onDelete, onOpen, onCheck, onMove }: {
   entries: Entry[];
   scope: Scope;
   managing: boolean;
@@ -29,6 +29,7 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
   pending: string[];
   onAdd: () => void;
   onEdit: (entries: Entry[]) => void;
+  onDelete: (entries: Entry[]) => void;
   onOpen: (entry: Entry) => void;
   onCheck: (entries: Entry[], checked: boolean) => void;
   onMove: (item: string, adjacent: string, placeAfter?: boolean) => Promise<boolean>;
@@ -138,6 +139,8 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
           })}
           <button className="secondary" disabled={saving} data-activity="Edit readiness item"
             aria-label={`Edit ${title}`} onClick={() => onEdit(item.entries)}>Edit</button>
+          <button className="secondary" disabled={saving} data-activity="Delete readiness item"
+            aria-label={`Delete ${title}`} onClick={() => onDelete(item.entries)}>Delete</button>
         </div>}
       </li>;
     })}</ul> : <p className="empty">No readiness items yet.</p>}

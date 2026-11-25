@@ -4,7 +4,7 @@ import { createClient, type Session } from "@supabase/supabase-js";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { catalogKinds, day, labels, launchCategories, stamp, statuses, table, tools, validLink, type Entry, type Kind, type Scope, type Tab, type ToolKey } from "./model";
 
-import { feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, readFeedbackSheet } from "./feedback-sheet";
+import { feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, readFeedbackSheet, SheetsAuthorizationError } from "./feedback-sheet";
 
 import LaunchManagement, { completionStatus, LaunchProgress, launchProgressRows } from "./launch-management";
 import { TestingActivity, WorkspaceTesting, type TrackedOutcome } from "./testing-activity";
@@ -81,12 +81,15 @@ export default function Home() {
   const [syncProblem, setSyncProblem] = useState("");
   const [pendingChecks, setPendingChecks] = useState<string[]>([]);
   const [readinessBusy, setReadinessBusy] = useState(false);
+  const [deletion, setDeletion] = useState<{ entries: Entry[]; tool: ToolKey | null } | null>(null);
+  const [deleteProblem, setDeleteProblem] = useState("");
   const lastView = useRef("");
   const userId = session?.user.id;
   const isAdmin = /^admin$/i.test(role ?? "");
   const activityPage = tab === "launch" ? "Launch Management" : tab === "testing" ? "Usage tracker" : tabs.find(item => item.key === tab)?.name ?? "Overview";
   const canRecord = !!userId && !!role && checkedUser === userId;
   const canManage = /^(admin|exec)$/i.test(role ?? "");
+  const showSources = canRecord && session?.user.email?.toLowerCase() === "sgray@commure.com";
 
   useEffect(() => {
     if (!client) { setReady(true); return; }
@@ -107,6 +110,7 @@ export default function Home() {
       setEntries([]);
       setDraft(null);
       setFocused(null);
+      setDeletion(null);
       return;
     }
     let active = true;
@@ -143,24 +147,27 @@ export default function Home() {
     return () => { active = false; };
   }, [userId, refresh]);
 
+  async function refreshFeedbackSheet(token: string) {
+    if (!client) return;
+    const snapshot = await readFeedbackSheet(token);
+    const { data, error } = await client.rpc("vercel_migration_tracker_sync_feedback", { snapshot });
+    if (error) throw new Error("The workbook was read, but the tracker could not save it. Try again.");
+    setRefresh(value => value + 1);
+    setNotice(`Refreshed ${data} feedback entries from Google Sheets.`);
+  }
+
   useEffect(() => {
-    const db = client;
     const pending = sessionStorage.getItem(feedbackSyncKey);
-    if (!db || !canManage || checkedUser !== userId || !pending) return;
+    if (!pending || !canManage || checkedUser !== userId) return;
     sessionStorage.removeItem(feedbackSyncKey);
     setTab("feedback");
     const token = session?.provider_token;
     if (!token || Date.now() - Number(pending) > 10 * 60_000) {
-      setSyncProblem("Google authorization did not finish. Reconnect to refresh feedback.");
+      setSyncProblem("Google authorization did not finish. Select Sync Google Sheet to try again.");
       return;
     }
     setSyncing(true);
-    readFeedbackSheet(token).then(async snapshot => {
-      const { data, error } = await db.rpc("vercel_migration_tracker_sync_feedback", { snapshot });
-      if (error) throw new Error("The workbook was read, but the tracker could not save it. Try again.");
-      setRefresh(value => value + 1);
-      setNotice(`Refreshed ${data} feedback entries from Google Sheets.`);
-    }).catch((error: unknown) => {
+    refreshFeedbackSheet(token).catch(error => {
       setSyncProblem(error instanceof Error ? error.message : "Feedback sync failed. Try again.");
     }).finally(() => setSyncing(false));
   }, [canManage, checkedUser, session?.provider_token, userId]);
@@ -249,22 +256,66 @@ export default function Home() {
     }
   }
 
+  function confirmDeletion(entries: Entry[], tool: ToolKey | null) {
+    setDeleteProblem("");
+    setDeletion({ entries, tool });
+  }
+
+  async function deleteReadiness() {
+    if (!client || !deletion || !canManage || readinessBusy) return;
+    const { entries: copies, tool } = deletion;
+    const [entry] = copies;
+    setReadinessBusy(true);
+    setDeleteProblem("");
+    try {
+      const { data, error } = await client.rpc("vercel_migration_tracker_delete_readiness", {
+        selected_tool: tool,
+        item_key: tool ? entry.id : entry.readiness_group ?? entry.id,
+        versions: Object.fromEntries(copies.map(copy => [copy.id, copy.updated_at]))
+      });
+      if (error) throw error;
+      const removed = new Set<string>(data);
+      setEntries(current => current.filter(item => !removed.has(item.id)));
+      setDeletion(null);
+      setNotice(copies.length > 1 ? `Checklist item deleted from ${copies.length} tools.` : "Checklist item deleted.");
+    } catch {
+      setDeleteProblem("The item could not be deleted. Close this dialog and reopen the item to try again.");
+      setRefresh(value => value + 1);
+    } finally {
+      setReadinessBusy(false);
+    }
+  }
+
   async function connectFeedbackSheet() {
-    if (!client || syncing) return;
+    if (!client || !canManage || syncing) return;
     setSyncing(true);
     setSyncProblem("");
-    sessionStorage.setItem(feedbackSyncKey, String(Date.now()));
-    const { error } = await client.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: new URL("/auth/callback", window.location.origin).href,
-        scopes: feedbackSheetScope,
-        queryParams: { hd: "commure.com", prompt: "consent" }
+    setNotice("");
+    try {
+      if (session?.provider_token) {
+        try {
+          await refreshFeedbackSheet(session.provider_token);
+          return;
+        } catch (error) {
+          if (!(error instanceof SheetsAuthorizationError)) throw error;
+        }
       }
-    });
-    if (error) {
-      sessionStorage.removeItem(feedbackSyncKey);
-      setSyncProblem("Google authorization could not start. Try again.");
+      sessionStorage.setItem(feedbackSyncKey, String(Date.now()));
+      const { error } = await client.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: new URL("/auth/callback", window.location.origin).href,
+          scopes: feedbackSheetScope,
+          queryParams: { hd: "commure.com", login_hint: session?.user.email ?? "" }
+        }
+      });
+      if (error) {
+        sessionStorage.removeItem(feedbackSyncKey);
+        throw new Error("Google authorization could not start. Try again.");
+      }
+    } catch (error) {
+      setSyncProblem(error instanceof Error ? error.message : "Feedback sync failed. Try again.");
+    } finally {
       setSyncing(false);
     }
   }
@@ -393,7 +444,7 @@ export default function Home() {
           <p className="eyebrow">{selectedTool ? "Tool overview" : "Operations portfolio"}</p>
           <h1>{tab === "launch" ? "Launch Management" : tab === "testing" ? "Testing" : selectedTool?.name ?? "Tooling portfolio"}</h1>
           <p>{tab === "launch" ? "Track the work each tool needs before rollout." : tab === "testing" ? "Review activity and record test outcomes by tool." : summary?.details ?? "Review what’s built, what’s planned, and what users have tested."}</p>
-          {summary && <div className="hero-links">
+          {summary && showSources && <div className="hero-links">
             {validLink(summary.deployment_url) && <a href={validLink(summary.deployment_url)!} target="_blank" rel="noreferrer">Open production ↗</a>}
             <a href={`https://vercel.com/sgray-5128/${selectedTool?.repo}`} target="_blank" rel="noreferrer">Vercel deployments ↗</a>
             {validLink(summary.source_url) && <a href={validLink(summary.source_url)!} target="_blank" rel="noreferrer">GitHub ↗</a>}
@@ -412,6 +463,7 @@ export default function Home() {
         </>
         : tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} pending={pendingChecks}
           onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry })}
+          onDelete={entry => confirmDeletion([entry], entry.tool_key)}
           onCheck={(entry, checked) => void saveStatus(entry, completionStatus(entry, checked))} onOpen={setFocused} />
         : tab === "overview" ? <>
           {scope === "all" && <section className="section" aria-label="Launch progress by tool">
@@ -439,6 +491,7 @@ export default function Home() {
           <ReadinessPlan key={scope} entries={scoped} scope={scope} managing={canManage} busy={loading || readinessBusy}
             onAdd={() => setDraft({ kind: "launch", tool: scope === "all" ? undefined : scope })}
             onEdit={copies => setDraft({ kind: "launch", entry: copies[0], readinessCopies: copies.length > 1 ? copies : undefined })}
+            onDelete={copies => confirmDeletion(copies, scope === "all" ? null : scope)}
             onCheck={(copies, checked) => copies.length === 1
               ? void saveStatus(copies[0], completionStatus(copies[0], checked))
               : void syncReadiness(copies, checked)}
@@ -463,7 +516,7 @@ export default function Home() {
             {tab === "feedback" && <p className="muted">Feedback from the migration spreadsheet and entries submitted here.</p>}
           </div><div className="actions">
             {tab === "feedback" && <>
-              <a className="secondary" href={feedbackSheetUrl} target="_blank" rel="noreferrer">Open feedback sheet ↗</a>
+              {showSources && <a className="secondary" href={feedbackSheetUrl} target="_blank" rel="noreferrer">Open feedback sheet ↗</a>}
               {canManage && <button className="secondary" disabled={syncing} onClick={() => void connectFeedbackSheet()}>
                 {syncing ? "Syncing…" : "Sync Google Sheet"}
               </button>}
@@ -484,7 +537,7 @@ export default function Home() {
             </>}
           </div>
           {tab === "catalog" || tab === "feedback" ? <ToolGroups key={`${tab}-${scope}`}
-            scope={scope} tab={tab} rows={filtered} items={itemById} onOpen={setFocused}
+            scope={scope} tab={tab} rows={filtered} items={itemById} onOpen={setFocused} showSources={showSources}
             filterKind={kind} filtering={!!(query || kind || status)}
             catalogStatus={canManage ? { pending: pendingChecks, save: saveStatus } : undefined} />
             : <EntryTable rows={filtered} visibleTool={scope === "all"} onOpen={setFocused} items={itemById} usage={tab === "test"}
@@ -492,11 +545,24 @@ export default function Home() {
         </section>}
       </div>
     </main>
-    {focused && <EntryDetails entry={focused} parent={focused.parent_id ? itemById.get(focused.parent_id) : undefined}
+    {deletion && <Modal title="Delete checklist item" close={() => { if (!readinessBusy) setDeletion(null); }}>
+      <div className="dialog-body">
+        <p>Delete <strong>{deletion.entries[0].title}</strong> from {tools.filter(tool =>
+          deletion.entries.some(entry => entry.tool_key === tool.key)).map(tool => tool.name).join(", ")}?</p>
+        {deleteProblem && <p className="alert" role="alert">{deleteProblem}</p>}
+      </div>
+      <footer className="dialog-footer">
+        <button className="secondary" disabled={readinessBusy} onClick={() => setDeletion(null)}>Cancel</button>
+        <button className="primary danger" disabled={readinessBusy} onClick={() => void deleteReadiness()}>
+          {readinessBusy ? "Deleting…" : "Delete checklist item"}
+        </button>
+      </footer>
+    </Modal>}
+    {focused && <EntryDetails showSources={showSources} entry={focused} parent={focused.parent_id ? itemById.get(focused.parent_id) : undefined}
       close={() => setFocused(null)} edit={canEdit(focused) ? () => { setDraft({ kind: focused.kind, entry: focused }); setFocused(null); } : undefined}
       add={focused.kind !== "test" ? nextKind => { setDraft({ kind: nextKind, parent: focused }); setFocused(null); } : undefined}
     />}
-    {draft && <Editor draft={draft} scope={scope} entries={entries} onClose={() => setDraft(null)} onSaved={onSaved}
+    {draft && <Editor showSources={showSources} draft={draft} scope={scope} entries={entries} onClose={() => setDraft(null)} onSaved={onSaved}
       onFailure={tool => {
         if (draft.kind === "launch" && draft.entry) setRefresh(value => value + 1);
         logActivity(tool, activityPage, `Save ${labels[draft.kind].toLowerCase()}`, "Failed");
@@ -510,9 +576,9 @@ function Stat({ title, detail, value, onClick }: { title: string; detail: string
 
 type CatalogStatus = { pending: string[]; save: (entry: Entry, status: string) => Promise<void> };
 
-function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, catalogStatus }: {
+function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, catalogStatus, showSources }: {
   scope: Scope; tab: "catalog" | "feedback"; rows: Entry[]; filterKind: string; filtering: boolean;
-  items: Map<string, Entry>; onOpen: (entry: Entry) => void; catalogStatus?: CatalogStatus;
+  items: Map<string, Entry>; onOpen: (entry: Entry) => void; catalogStatus?: CatalogStatus; showSources: boolean;
 }) {
   const [expanded, setExpanded] = useState<Partial<Record<ToolKey, boolean>>>({});
   const groups = tools.filter(tool => scope === "all" || tool.key === scope);
@@ -531,14 +597,14 @@ function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, ca
         </button></h3>
         <div id={`${tab}-${tool.key}-entries`} className="tool-group-content" hidden={!open}>
           {open && (tab === "feedback"
-            ? <EntryTable rows={groupRows} visibleTool={false} variant="feedback" items={items} onOpen={onOpen}
+            ? <EntryTable showSources={showSources} rows={groupRows} visibleTool={false} variant="feedback" items={items} onOpen={onOpen}
                 empty={filtering ? "No feedback matches these filters." : "No feedback recorded for this tool."} />
             : <>
               {filterKind !== "metric" && <section><h4>Features</h4>
                 <EntryTable rows={features} visibleTool={false} catalogStatus={catalogStatus} items={items} onOpen={onOpen} empty="No matching features." />
               </section>}
               {filterKind !== "feature" && <section><h4>Metrics</h4>
-                <EntryTable rows={metrics} visibleTool={false} variant="metric" catalogStatus={catalogStatus} items={items} onOpen={onOpen} empty="No matching metrics." />
+                <EntryTable showSources={showSources} rows={metrics} visibleTool={false} variant="metric" catalogStatus={catalogStatus} items={items} onOpen={onOpen} empty="No matching metrics." />
               </section>}
             </>)}
         </div>
@@ -547,8 +613,8 @@ function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, ca
   </div>;
 }
 
-function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogStatus, empty = "No follow-up entries." }: {
-  rows: Entry[]; visibleTool: boolean; usage?: boolean; variant?: "metric" | "feedback"; items: Map<string, Entry>; onOpen: (entry: Entry) => void; empty?: string; catalogStatus?: CatalogStatus;
+function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogStatus, showSources, empty = "No follow-up entries." }: {
+  rows: Entry[]; visibleTool: boolean; usage?: boolean; variant?: "metric" | "feedback"; items: Map<string, Entry>; onOpen: (entry: Entry) => void; empty?: string; catalogStatus?: CatalogStatus; showSources?: boolean;
 }) {
   const showTest = usage || rows[0]?.kind === "test";
   const showPlan = rows[0]?.kind === "plan";
@@ -556,7 +622,7 @@ function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogS
   return <div className="table-wrap"><table>
     <thead><tr><th>{showTest ? "Action" : variant === "metric" ? "Metric" : variant === "feedback" ? "Feedback" : "Entry"}</th>{visibleTool && <th>Tool</th>}<th>{showTest ? "Outcome" : "Status"}</th>
       {showTest ? <><th>Tester</th><th>Environment</th><th>Logged (ET)</th></> :
-        showPlan ? <><th>Owner</th><th>Target date</th></> : variant === "feedback" ? <><th>Requested by</th><th>Source</th></>
+        showPlan ? <><th>Owner</th><th>Target date</th></> : variant === "feedback" ? <><th>Requested by</th>{showSources && <th>Source</th>}</>
           : variant === "metric" ? <><th>Area</th><th>Metric source</th></> : <th>Area / type</th>}</tr></thead>
     <tbody>{rows.map(entry => <tr key={entry.id}>
       <td><button className="row-link" onClick={() => onOpen(entry)}>{entry.title}</button>
@@ -568,12 +634,12 @@ function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogS
         : <Badge>{entry.status}</Badge>}</td>
       {showTest ? <><td>{entry.actor_email ?? "—"}</td><td>{entry.environment}</td><td className="nowrap">{stamp.format(new Date(entry.created_at))}</td></>
         : showPlan ? <><td>{entry.owner ?? "—"}</td><td>{entry.due_date ? day.format(new Date(entry.due_date)) : "—"}</td></>
-        : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td><td>
+        : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td>{showSources && <td>
           {entry.feedback_sheet_tab && validLink(entry.source_url)
             ? <a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">{entry.feedback_sheet_tab} ↗</a> : "Tracker"}
-        </td></> : variant === "metric" ? <><td>{entry.area ?? "—"}</td><td>
+        </td>}</> : variant === "metric" ? <><td>{entry.area ?? "—"}</td><td>
           <span>{entry.metric_source || "—"}</span>
-          {validLink(entry.source_url) && <span className="subline"><a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">View source ↗</a></span>}
+          {showSources && validLink(entry.source_url) && <span className="subline"><a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">View source ↗</a></span>}
         </td></> : <td>{[entry.area, labels[entry.kind]].filter(Boolean).join(" · ")}</td>}
     </tr>)}</tbody>
   </table></div>;
@@ -590,11 +656,11 @@ function Modal({ title, close, children }: { title: string; close: () => void; c
   </dialog>;
 }
 
-function EntryDetails({ entry, parent, close, edit, add }: {
-  entry: Entry; parent?: Entry; close: () => void; edit?: () => void; add?: (kind: Kind) => void;
+function EntryDetails({ entry, parent, close, edit, add, showSources }: {
+  entry: Entry; parent?: Entry; showSources: boolean; close: () => void; edit?: () => void; add?: (kind: Kind) => void;
 }) {
-  const source = validLink(entry.source_url);
-  const deployment = validLink(entry.deployment_url);
+  const source = showSources && validLink(entry.source_url);
+  const deployment = showSources && validLink(entry.deployment_url);
   return <Modal title={entry.title} close={close}>
     <div className="dialog-body">
       <div className="detail-meta">{tools.find(tool => tool.key === entry.tool_key)?.name} <Badge>{entry.status}</Badge></div>
@@ -622,8 +688,8 @@ function EntryDetails({ entry, parent, close, edit, add }: {
   </Modal>;
 }
 
-function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
-  draft: Draft; scope: Scope; entries: Entry[]; onClose: () => void; onSaved: (saved: Entry[]) => void; onFailure: (tool: Scope) => void;
+function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSources }: {
+  draft: Draft; scope: Scope; entries: Entry[]; showSources: boolean; onClose: () => void; onSaved: (saved: Entry[]) => void; onFailure: (tool: Scope) => void;
 }) {
   const { kind, entry, parent, readinessCopies } = draft;
   const bulkCreate = (catalogKinds.has(kind) || kind === "launch") && !entry && !parent && !draft.tool;
@@ -654,7 +720,7 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
     const values = {
       title, details: read("details"), status: read("status"), parent_id: tool && related || null,
       area: read("area") || null, owner: read("owner") || null, due_date: read("due_date") || null,
-      deployment_url: deployment || null, source_url: source || null,
+      ...(showSources ? { deployment_url: deployment || null, source_url: source || null } : {}),
       ...(kind === "metric" ? { metric_source: read("metric_source") || null } : {})
     };
     setSaving(true);
@@ -737,9 +803,9 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
         </label>}
         <label className="wide">{kind === "test" ? "Steps and observations" : kind === "plan" ? "Scope and acceptance criteria" : kind === "launch" ? "Notes" : "Details"}
           <textarea name="details" rows={4} maxLength={5000} defaultValue={entry?.details} required={kind === "feedback" || kind === "plan"} /></label>
-        {(kind === "test" || kind === "plan" || kind === "launch") && <label className="wide">{kind === "launch" ? "Related link" : "Deployment link"} <input name="deployment_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.deployment_url ?? ""} /></label>}
+        {showSources && (kind === "test" || kind === "plan" || kind === "launch") && <label className="wide">{kind === "launch" ? "Related link" : "Deployment link"} <input name="deployment_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.deployment_url ?? ""} /></label>}
         {kind === "metric" && <label className="wide">Metric source<input name="metric_source" maxLength={500} defaultValue={entry?.metric_source ?? ""} /></label>}
-        {catalogKinds.has(kind) && <label className="wide">Source link <input name="source_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.source_url ?? ""} /></label>}
+        {showSources && catalogKinds.has(kind) && <label className="wide">Source link <input name="source_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.source_url ?? ""} /></label>}
       </div>
       <footer className="dialog-footer"><button className="secondary" type="button" disabled={saving} onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : selectedTools.length > 1 ? `Save to ${selectedTools.length} tools` : "Save"}</button></footer>
     </form>

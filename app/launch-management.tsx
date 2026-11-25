@@ -30,12 +30,13 @@ export function LaunchProgress({ label, rows }: { label: string; rows: Entry[] }
   </div>;
 }
 
-export default function LaunchManagement({ entries, managing, pending, onAdd, onEdit, onCheck, onOpen }: {
+export default function LaunchManagement({ entries, managing, pending, onAdd, onEdit, onDelete, onCheck, onOpen }: {
   entries: Entry[];
   managing: boolean;
   pending: string[];
   onAdd: (tool: ToolKey) => void;
   onEdit: (entry: Entry) => void;
+  onDelete: (entry: Entry) => void;
   onCheck: (entry: Entry, checked: boolean) => void;
   onOpen: (entry: Entry) => void;
 }) {
@@ -54,8 +55,12 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
             {entry.kind !== "launch" && <span>{entry.status}</span>}
           </div>
         </div>
-        {managing && <button className="secondary" data-activity="Edit checklist item" aria-label={`Edit ${entry.title}`}
-          onClick={() => onEdit(entry)}>Edit</button>}
+        {managing && <div className="readiness-controls">
+          <button className="secondary" data-activity="Edit checklist item" aria-label={`Edit ${entry.title}`}
+            onClick={() => onEdit(entry)}>Edit</button>
+          {entry.kind === "launch" && <button className="secondary" disabled={pending.includes(entry.id)}
+            data-activity="Delete readiness item" aria-label={`Delete ${entry.title}`} onClick={() => onDelete(entry)}>Delete</button>}
+        </div>}
       </li>
     ))}</ul>;
   }
