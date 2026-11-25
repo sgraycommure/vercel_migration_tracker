@@ -229,12 +229,13 @@ export default function Home() {
     }
   }
 
-  async function moveReadiness(item: string, adjacent: string) {
+  async function moveReadiness(item: string, adjacent: string, placeAfter?: boolean) {
     if (!client || !canManage || readinessBusy) return false;
     setReadinessBusy(true);
     try {
       const { data, error } = await client.rpc("vercel_migration_tracker_move_readiness", {
-        tool: scope === "all" ? null : scope, item_key: item, adjacent_key: adjacent
+        tool: scope === "all" ? null : scope, item_key: item, adjacent_key: adjacent,
+        ...(placeAfter === undefined ? {} : { place_after: placeAfter })
       });
       if (error) throw error;
       storeEntries(data as Entry[]);
@@ -435,7 +436,7 @@ export default function Home() {
             <Stat title="Open feedback" value={feedback.length} detail="New or triaged" onClick={() => navigate("feedback")} />
             <Stat title="Logged test results" value={tests.length} detail={`${people.length} ${people.length === 1 ? "tester" : "testers"} · ${tests.filter(entry => entry.status === "Passed").length} passed`} onClick={() => navigate("test")} />
           </section>
-          <ReadinessPlan entries={scoped} scope={scope} managing={canManage} busy={loading || readinessBusy}
+          <ReadinessPlan key={scope} entries={scoped} scope={scope} managing={canManage} busy={loading || readinessBusy}
             onAdd={() => setDraft({ kind: "launch", tool: scope === "all" ? undefined : scope })}
             onEdit={copies => setDraft({ kind: "launch", entry: copies[0], readinessCopies: copies.length > 1 ? copies : undefined })}
             onCheck={(copies, checked) => copies.length === 1
