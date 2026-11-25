@@ -10,6 +10,7 @@ import LaunchManagement, { completionStatus, LaunchProgress, launchProgressRows 
 import { TestingActivity, WorkspaceTesting, type TrackedOutcome } from "./testing-activity";
 
 import ReleaseTesting from "./release-testing";
+import ReadinessPlan from "./readiness-plan";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -23,9 +24,17 @@ const tabs: { key: Tab; name: string }[] = [
   { key: "test", name: "Usage tracker" }
 ];
 
-type Draft = { kind: Kind; entry?: Entry; parent?: Entry; tool?: ToolKey };
+type Draft = { kind: Kind; entry?: Entry; parent?: Entry; tool?: ToolKey; readinessCopies?: Entry[] };
 const activitySessionKey = "tooling-tracker-browser-session";
 const environmentName = ({ preview: "Preview", production: "Production", development: "Local" } as Record<string, string>)[process.env.NEXT_PUBLIC_VERCEL_ENV ?? ""] ?? null;
+
+function updateReadiness(copies: Entry[], changes: Record<string, string | null>) {
+  return client!.rpc("vercel_migration_tracker_edit_readiness", {
+    item_key: copies[0].readiness_group ?? copies[0].id,
+    versions: Object.fromEntries(copies.map(entry => [entry.id, entry.updated_at])),
+    changes
+  });
+}
 
 function logActivity(tool: Scope, page: string, action: string, outcome: TrackedOutcome) {
   if (!client) return;
@@ -71,6 +80,7 @@ export default function Home() {
   const [syncing, setSyncing] = useState(false);
   const [syncProblem, setSyncProblem] = useState("");
   const [pendingChecks, setPendingChecks] = useState<string[]>([]);
+  const [readinessBusy, setReadinessBusy] = useState(false);
   const lastView = useRef("");
   const userId = session?.user.id;
   const isAdmin = /^admin$/i.test(role ?? "");
@@ -203,6 +213,41 @@ export default function Home() {
     }
   }
 
+  async function syncReadiness(copies: Entry[], checked: boolean) {
+    if (!canManage || readinessBusy) return;
+    setReadinessBusy(true);
+    try {
+      const { data, error } = await updateReadiness(copies, { status: checked ? "Complete" : "Open" });
+      if (error) throw error;
+      storeEntries(data as Entry[]);
+      setNotice("Checklist status saved.");
+    } catch {
+      setNotice("The checklist status could not be saved. Reloading the latest plan.");
+      setRefresh(value => value + 1);
+    } finally {
+      setReadinessBusy(false);
+    }
+  }
+
+  async function moveReadiness(item: string, adjacent: string) {
+    if (!client || !canManage || readinessBusy) return false;
+    setReadinessBusy(true);
+    try {
+      const { data, error } = await client.rpc("vercel_migration_tracker_move_readiness", {
+        tool: scope === "all" ? null : scope, item_key: item, adjacent_key: adjacent
+      });
+      if (error) throw error;
+      storeEntries(data as Entry[]);
+      return true;
+    } catch {
+      setNotice("The checklist order could not be saved. Reloading the latest plan.");
+      setRefresh(value => value + 1);
+      return false;
+    } finally {
+      setReadinessBusy(false);
+    }
+  }
+
   async function connectFeedbackSheet() {
     if (!client || syncing) return;
     setSyncing(true);
@@ -302,12 +347,12 @@ export default function Home() {
     const catalog = catalogKinds.has(entry.kind);
     storeEntries(saved);
     if (catalog) setRefresh(value => value + 1);
-    if (tab !== "launch" && tab !== "testing") {
+    if (tab !== "launch" && tab !== "testing" && entry.kind !== "launch") {
       const nextScope = catalog && scope !== "all" && saved.length === 1 ? entry.tool_key : scope;
       navigate(catalog ? "catalog" : entry.kind as Tab, saved.length > 1 ? "all" : nextScope);
     }
     setDraft(null);
-    setNotice(saved.length > 1 ? `${labels[entry.kind]} added to ${saved.length} tools.` : `${labels[entry.kind]} saved.`);
+    setNotice(saved.length > 1 ? `${labels[entry.kind]} ${draft?.entry ? "updated on" : "added to"} ${saved.length} tools.` : `${labels[entry.kind]} saved.`);
   }
 
   return <div className="shell">
@@ -390,6 +435,13 @@ export default function Home() {
             <Stat title="Open feedback" value={feedback.length} detail="New or triaged" onClick={() => navigate("feedback")} />
             <Stat title="Logged test results" value={tests.length} detail={`${people.length} ${people.length === 1 ? "tester" : "testers"} · ${tests.filter(entry => entry.status === "Passed").length} passed`} onClick={() => navigate("test")} />
           </section>
+          <ReadinessPlan entries={scoped} scope={scope} managing={canManage} busy={loading || readinessBusy}
+            onAdd={() => setDraft({ kind: "launch", tool: scope === "all" ? undefined : scope })}
+            onEdit={copies => setDraft({ kind: "launch", entry: copies[0], readinessCopies: copies.length > 1 ? copies : undefined })}
+            onCheck={(copies, checked) => copies.length === 1
+              ? void saveStatus(copies[0], completionStatus(copies[0], checked))
+              : void syncReadiness(copies, checked)}
+            onMove={moveReadiness} onOpen={setFocused} pending={pendingChecks} />
           {scope !== "all" && <section className="section">
             <div className="section-head"><h2>Evaluation follow-up</h2><button className="secondary" onClick={() => navigate("catalog")}>View catalog</button></div>
             <EntryTable rows={catalog.filter(entry => ["Needs verification", "Data gap"].includes(entry.status))} visibleTool={false} onOpen={setFocused} items={itemById} />
@@ -444,7 +496,10 @@ export default function Home() {
       add={focused.kind !== "test" ? nextKind => { setDraft({ kind: nextKind, parent: focused }); setFocused(null); } : undefined}
     />}
     {draft && <Editor draft={draft} scope={scope} entries={entries} onClose={() => setDraft(null)} onSaved={onSaved}
-      onFailure={tool => logActivity(tool, activityPage, `Save ${labels[draft.kind].toLowerCase()}`, "Failed")} />}
+      onFailure={tool => {
+        if (draft.kind === "launch" && draft.entry) setRefresh(value => value + 1);
+        logActivity(tool, activityPage, `Save ${labels[draft.kind].toLowerCase()}`, "Failed");
+      }} />}
   </div>;
 }
 
@@ -569,14 +624,17 @@ function EntryDetails({ entry, parent, close, edit, add }: {
 function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
   draft: Draft; scope: Scope; entries: Entry[]; onClose: () => void; onSaved: (saved: Entry[]) => void; onFailure: (tool: Scope) => void;
 }) {
-  const { kind, entry, parent } = draft;
-  const bulkCreate = catalogKinds.has(kind) && !entry && !parent && !draft.tool;
+  const { kind, entry, parent, readinessCopies } = draft;
+  const bulkCreate = (catalogKinds.has(kind) || kind === "launch") && !entry && !parent && !draft.tool;
+  const changedFields = useRef(new Set<string>());
   const initialTool = entry?.tool_key ?? parent?.tool_key ?? draft.tool ?? (scope === "all" ? null : scope);
   const [selectedTools, setSelectedTools] = useState<ToolKey[]>(initialTool ? [initialTool] : []);
   const tool = selectedTools.length === 1 ? selectedTools[0] : "";
   const [related, setRelated] = useState(entry?.parent_id ?? parent?.id ?? "");
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState("");
+  const mixedStatus = readinessCopies?.some(copy => copy.status !== entry?.status);
+  const mixedCategory = readinessCopies?.some(copy => copy.area !== entry?.area);
   const relatedEntries = entries.filter(item => item.id !== entry?.id && item.tool_key === tool && (catalogKinds.has(item.kind) || item.kind === "plan" || item.kind === "feedback"))
     .sort((a, b) => a.title.localeCompare(b.title));
 
@@ -601,15 +659,31 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
     setSaving(true);
     setProblem("");
     try {
-      const result = entry
-        ? await client.from(table).update(values).eq("id", entry.id).select()
-        : await client.from(table).insert(selectedTools.map(tool_key => ({
-          ...values, tool_key, kind, environment: read("environment") || null
-        }))).select();
+      const changes = Object.fromEntries(Object.entries(values).filter(([field, value]) =>
+        changedFields.current.has(field) && !((field === "area" || field === "status") && !value)
+      ));
+      if (readinessCopies && Object.keys(changes).length === 0) {
+        onClose();
+        return;
+      }
+      const group = kind === "launch" && selectedTools.length > 1 ? crypto.randomUUID() : null;
+      const edit = entry ? client.from(table).update(values).eq("id", entry.id) : null;
+      if (edit && entry?.kind === "launch") edit.eq("updated_at", entry.updated_at);
+      const result = readinessCopies
+        ? await updateReadiness(readinessCopies, changes)
+        : edit
+          ? await edit.select()
+          : await client.from(table).insert(selectedTools.map(tool_key => ({
+            ...values, tool_key, kind, environment: read("environment") || null,
+            ...(group ? { readiness_group: group } : {})
+          }))).select();
       if (result.error || result.data.length === 0) throw result.error ?? new Error("No entries returned");
       onSaved(result.data as Entry[]);
     } catch {
-      setProblem("The save could not be confirmed. Check your access and try again.");
+      setProblem(readinessCopies
+        ? "The shared edit could not be saved. Close and reopen the item to edit the latest version."
+        : kind === "launch" && entry ? "The edit could not be saved. Close and reopen the item to edit the latest version."
+        : "The save could not be confirmed. Check your access and try again.");
       onFailure(tool || "all");
     } finally {
       setSaving(false);
@@ -617,10 +691,18 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
   }
 
   return <Modal title={entry ? `Edit ${labels[kind].toLowerCase()}` : kind === "test" ? "Log test action" : `Add ${labels[kind].toLowerCase()}`} close={() => { if (!saving) onClose(); }}>
-    <form onSubmit={submit}>
+    <form onSubmit={submit} onChange={event => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) {
+        changedFields.current.add(event.target.name);
+      }
+    }}>
       <div className="dialog-body form">
         {problem && <p className="alert wide" role="alert">{problem}</p>}
-        {bulkCreate ? <fieldset className="wide tool-picker">
+        {readinessCopies ? <div className="wide">
+          <strong>Tools</strong>
+          <p>{tools.filter(item => readinessCopies.some(copy => copy.tool_key === item.key)).map(item => item.name).join(" · ")}</p>
+          <p className="muted">Only fields you change here are applied to every copy. The form starts with the values from {tools.find(item => item.key === entry?.tool_key)?.name}.</p>
+        </div> : bulkCreate ? <fieldset className="wide tool-picker">
           <legend>Tools</legend>
           {tools.map(item => <label key={item.key}>
             <input type="checkbox" checked={selectedTools.includes(item.key)} disabled={saving} onChange={event => {
@@ -638,20 +720,20 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure }: {
           }}>
           <option value="">Select a tool</option>{tools.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>}
         <label className="wide">{kind === "test" ? "Action tested" : "Title"}<input name="title" required maxLength={160} defaultValue={entry?.title} /></label>
-        <label>{kind === "test" ? "Outcome" : "Status"}<select name="status" defaultValue={entry?.status ?? (catalogKinds.has(kind) ? "Needs verification" : statuses[kind][0])}>
-          {statuses[kind].map(value => <option key={value}>{value}</option>)}</select></label>
+        <label>{kind === "test" ? "Outcome" : "Status"}<select name="status" defaultValue={mixedStatus ? "" : entry?.status ?? (catalogKinds.has(kind) ? "Needs verification" : statuses[kind][0])}>
+          {mixedStatus && <option value="">Varies by tool</option>}{statuses[kind].map(value => <option key={value}>{value}</option>)}</select></label>
         {kind === "test" && <label>Environment<select name="environment"><option>Preview</option><option>Production</option><option>Local</option></select></label>}
         {catalogKinds.has(kind) && <label>Area<input name="area" maxLength={80} defaultValue={entry?.area ?? ""} /></label>}
-        {kind === "launch" && <label>Category<select name="area" defaultValue={entry?.area ?? "Punch list"}>
-          {launchCategories.map(category => <option key={category}>{category}</option>)}</select></label>}
+        {kind === "launch" && <label>Category<select name="area" defaultValue={mixedCategory ? "" : entry?.area ?? "Punch list"}>
+          {mixedCategory && <option value="">Varies by tool</option>}{launchCategories.map(category => <option key={category}>{category}</option>)}</select></label>}
         {(kind === "plan" || kind === "launch" || kind === "feature") && <>
           <label>Owner<input name="owner" maxLength={160} defaultValue={entry?.owner ?? ""} /></label>
           <label>Due date<input type="date" name="due_date" defaultValue={entry?.due_date ?? ""} /></label>
         </>}
-        <label className="wide">Related entry <select value={related} disabled={!tool || saving} onChange={event => setRelated(event.target.value)}>
+        {!readinessCopies && <label className="wide">Related entry <select value={related} disabled={!tool || saving} onChange={event => setRelated(event.target.value)}>
           <option value="">None</option>{relatedEntries.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.title}</option>)}</select>
           {selectedTools.length > 1 && <small className="muted">Related entries are specific to one tool. You can link each copy after saving.</small>}
-        </label>
+        </label>}
         <label className="wide">{kind === "test" ? "Steps and observations" : kind === "plan" ? "Scope and acceptance criteria" : kind === "launch" ? "Notes" : "Details"}
           <textarea name="details" rows={4} maxLength={5000} defaultValue={entry?.details} required={kind === "feedback" || kind === "plan"} /></label>
         {(kind === "test" || kind === "plan" || kind === "launch") && <label className="wide">{kind === "launch" ? "Related link" : "Deployment link"} <input name="deployment_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.deployment_url ?? ""} /></label>}

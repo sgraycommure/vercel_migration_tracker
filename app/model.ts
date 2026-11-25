@@ -44,6 +44,9 @@ export type Entry = {
   feedback_response: string | null;
   feedback_sheet_present: boolean;
   parent_id: string | null;
+  readiness_group: string | null;
+  readiness_overview_order: number | null;
+  readiness_tool_order: number | null;
   created_by: string | null;
   actor_email: string | null;
   created_at: string;

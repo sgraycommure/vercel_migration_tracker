@@ -1,5 +1,7 @@
 import { day, launchCategories, tools, type Entry, type ToolKey } from "./model";
 
+import { readinessItems } from "./readiness-plan";
+
 const wave: Record<ToolKey, number> = { launch: 1, px: 2, "customer-ops": 2, capacity: 3, efficiency: 3 };
 
 export function completionStatus(entry: Entry, checked: boolean) {
@@ -62,7 +64,8 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
     <div className="section-head"><div><h2>Readiness by tool</h2><p className="muted">Completion uses the catalog, build plans, and readiness checklist below.</p></div></div>
     <div className="launch-tools">{[...tools].sort((a,b) => wave[a.key] - wave[b.key]).map(tool => {
       const scoped = entries.filter(entry => entry.tool_key === tool.key);
-      const { features, readiness } = launchProgressRows(scoped);
+      const { features } = launchProgressRows(scoped);
+      const readiness = readinessItems(scoped, tool.key).map(item => item.entries[0]);
       const openFeedback = scoped.filter(entry => entry.kind === "feedback" && entry.feedback_sheet_present !== false && entry.status !== "Resolved");
       const done = [...features, ...readiness].filter(completed).length;
       const total = features.length + readiness.length;
