@@ -76,7 +76,10 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
       </div>
       {managing && <button className="primary" disabled={busy} onClick={onAdd}>Add checklist item</button>}
     </div>
-    {items.length ? <ul ref={list} className="launch-checklist readiness-list" aria-busy={busy}
+    {items.length > 0 && <div className="readiness-column-head" data-managing={managing}>
+      <span>Checklist item</span><span>Latest status</span>
+    </div>}
+    {items.length ? <ul data-managing={managing} ref={list} className="launch-checklist readiness-list" aria-busy={busy}
       onDragLeave={event => {
         if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null);
       }}>{items.map((item, index) => {
@@ -89,6 +92,7 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
         item.entries.every(copy => copy[field] === entry[field]) ? entry[field] : null;
       const title = common("title") ?? entry.title;
       const dueDate = common("due_date");
+      const differentUpdates = item.entries.some(copy => copy.readiness_latest_status !== entry.readiness_latest_status);
       return <li key={item.key} data-readiness-key={item.key} data-dragging={draggedKey === item.key || undefined}
         data-drop={dropTarget?.key === item.key ? dropTarget.after ? "after" : "before" : undefined}
         onDragOver={event => {
@@ -126,6 +130,11 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
           {scope === "all" && <p className="muted readiness-tools">{byTool.map(tool => tool.name).join(" · ")}</p>}
           {entry.details && item.entries.every(copy => copy.details === entry.details) && <p>{entry.details}</p>}
           {item.entries.some(copy => copy.details !== entry.details) && <p className="muted">Notes vary by tool.</p>}
+        </div>
+        <div className="readiness-latest">
+          {differentUpdates ? item.entries.filter(copy => copy.readiness_latest_status).map(copy =>
+            <p key={copy.id}><strong>{tools.find(tool => tool.key === copy.tool_key)?.name}</strong> {copy.readiness_latest_status}</p>
+          ) : entry.readiness_latest_status || "—"}
         </div>
         {managing && <div className="readiness-controls">
           {[-1, 1].map(direction => {

@@ -49,6 +49,7 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
         <div className="launch-item">
           <button className="row-link" data-activity="Open checklist details" onClick={() => onOpen(entry)}>{entry.title}</button>
           {entry.details && <p>{entry.details}</p>}
+          {entry.readiness_latest_status && <p><strong>Latest status</strong> {entry.readiness_latest_status}</p>}
           <div className="launch-meta">
             <span>{entry.owner || "Unassigned"}</span>
             <span>{entry.due_date ? `Due ${day.format(new Date(entry.due_date))}` : "No due date"}</span>
@@ -71,7 +72,7 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
       const scoped = entries.filter(entry => entry.tool_key === tool.key);
       const { features } = launchProgressRows(scoped);
       const readiness = readinessItems(scoped, tool.key).map(item => item.entries[0]);
-      const openFeedback = scoped.filter(entry => entry.kind === "feedback" && entry.feedback_sheet_present !== false && entry.status !== "Resolved");
+      const openFeedback = scoped.filter(entry => entry.kind === "feedback" && entry.feedback_sheet_present !== false && entry.status === "Pending");
       const done = [...features, ...readiness].filter(completed).length;
       const total = features.length + readiness.length;
       const complete = total > 0 && done === total && openFeedback.length === 0;

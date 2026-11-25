@@ -10,10 +10,12 @@ export type ToolKey = (typeof tools)[number]["key"];
 export type Kind = "tool" | "feature" | "metric" | "feedback" | "plan" | "test" | "launch" | "qa";
 export type Tab = "overview" | "catalog" | "feedback" | "plan" | "test" | "launch" | "testing";
 
+export const feedbackStatuses = ["Pending", "Reviewed - Not Proceeding", "Resolved"] as const;
+
 const catalogStatuses = ["Implemented", "Needs verification", "Data gap", "Removed", "Planned"];
 export const statuses: Record<Kind, string[]> = {
   tool: catalogStatuses, feature: catalogStatuses, metric: catalogStatuses,
-  feedback: ["New", "Triaged", "Resolved"],
+  feedback: [...feedbackStatuses],
   plan: ["Backlog", "Planned", "In progress", "Ready for testing", "Shipped"],
   test: ["Started", "Passed", "Failed", "Blocked"],
   launch: ["Open", "Complete"], qa: ["Open", "Passed", "Failed", "Blocked"]
@@ -44,6 +46,7 @@ export type Entry = {
   feedback_response: string | null;
   feedback_sheet_present: boolean;
   parent_id: string | null;
+  readiness_latest_status: string | null;
   readiness_group: string | null;
   readiness_overview_order: number | null;
   readiness_tool_order: number | null;

@@ -4,7 +4,7 @@ import { createClient, type Session } from "@supabase/supabase-js";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { catalogKinds, day, labels, launchCategories, stamp, statuses, table, tools, validLink, type Entry, type Kind, type Scope, type Tab, type ToolKey } from "./model";
 
-import { feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, readFeedbackSheet, SheetsAuthorizationError } from "./feedback-sheet";
+import { configureFeedbackStatuses, feedbackSheetScope, feedbackSheetUrl, feedbackSyncKey, feedbackWriteKey, feedbackWriteScope, readFeedbackSheet, SheetsAuthorizationError, writeFeedbackSheet } from "./feedback-sheet";
 
 import LaunchManagement, { completionStatus, LaunchProgress, launchProgressRows } from "./launch-management";
 import { TestingActivity, WorkspaceTesting, type TrackedOutcome } from "./testing-activity";
@@ -24,17 +24,9 @@ const tabs: { key: Tab; name: string }[] = [
   { key: "test", name: "Usage tracker" }
 ];
 
-type Draft = { kind: Kind; entry?: Entry; parent?: Entry; tool?: ToolKey; readinessCopies?: Entry[] };
+type Draft = { kind: Kind; entry?: Entry; parent?: Entry; tool?: ToolKey };
 const activitySessionKey = "tooling-tracker-browser-session";
 const environmentName = ({ preview: "Preview", production: "Production", development: "Local" } as Record<string, string>)[process.env.NEXT_PUBLIC_VERCEL_ENV ?? ""] ?? null;
-
-function updateReadiness(copies: Entry[], changes: Record<string, string | null>) {
-  return client!.rpc("vercel_migration_tracker_edit_readiness", {
-    item_key: copies[0].readiness_group ?? copies[0].id,
-    versions: Object.fromEntries(copies.map(entry => [entry.id, entry.updated_at])),
-    changes
-  });
-}
 
 function logActivity(tool: Scope, page: string, action: string, outcome: TrackedOutcome) {
   if (!client) return;
@@ -157,9 +149,11 @@ export default function Home() {
   }
 
   useEffect(() => {
-    const pending = sessionStorage.getItem(feedbackSyncKey);
+    const writePending = sessionStorage.getItem(feedbackWriteKey);
+    const pending = writePending ?? sessionStorage.getItem(feedbackSyncKey);
     if (!pending || !canManage || checkedUser !== userId) return;
     sessionStorage.removeItem(feedbackSyncKey);
+    sessionStorage.removeItem(feedbackWriteKey);
     setTab("feedback");
     const token = session?.provider_token;
     if (!token || Date.now() - Number(pending) > 10 * 60_000) {
@@ -167,7 +161,11 @@ export default function Home() {
       return;
     }
     setSyncing(true);
-    refreshFeedbackSheet(token).catch(error => {
+    (async () => {
+      if (writePending) await configureFeedbackStatuses(token);
+      await refreshFeedbackSheet(token);
+      if (writePending) setNotice("Google Sheets editing is connected and status dropdowns are set on all five tabs.");
+    })().catch(error => {
       setSyncProblem(error instanceof Error ? error.message : "Feedback sync failed. Try again.");
     }).finally(() => setSyncing(false));
   }, [canManage, checkedUser, session?.provider_token, userId]);
@@ -221,10 +219,14 @@ export default function Home() {
   }
 
   async function syncReadiness(copies: Entry[], checked: boolean) {
-    if (!canManage || readinessBusy) return;
+    if (!client || !canManage || readinessBusy) return;
     setReadinessBusy(true);
     try {
-      const { data, error } = await updateReadiness(copies, { status: checked ? "Complete" : "Open" });
+      const { data, error } = await client.rpc("vercel_migration_tracker_edit_readiness", {
+        item_key: copies[0].readiness_group ?? copies[0].id,
+        versions: Object.fromEntries(copies.map(item => [item.id, item.updated_at])),
+        changes: { status: checked ? "Complete" : "Open" }
+      });
       if (error) throw error;
       storeEntries(data as Entry[]);
       setNotice("Checklist status saved.");
@@ -286,7 +288,7 @@ export default function Home() {
     }
   }
 
-  async function connectFeedbackSheet() {
+  async function connectFeedbackSheet(enableEditing = false) {
     if (!client || !canManage || syncing) return;
     setSyncing(true);
     setSyncProblem("");
@@ -294,23 +296,26 @@ export default function Home() {
     try {
       if (session?.provider_token) {
         try {
+          if (enableEditing) await configureFeedbackStatuses(session.provider_token);
           await refreshFeedbackSheet(session.provider_token);
+          if (enableEditing) setNotice("Google Sheets editing is connected and status dropdowns are set on all five tabs.");
           return;
         } catch (error) {
           if (!(error instanceof SheetsAuthorizationError)) throw error;
         }
       }
-      sessionStorage.setItem(feedbackSyncKey, String(Date.now()));
+      const pendingKey = enableEditing ? feedbackWriteKey : feedbackSyncKey;
+      sessionStorage.setItem(pendingKey, String(Date.now()));
       const { error } = await client.auth.signInWithOAuth({
         provider: "google",
         options: {
           redirectTo: new URL("/auth/callback", window.location.origin).href,
-          scopes: feedbackSheetScope,
+          scopes: enableEditing ? feedbackWriteScope : feedbackSheetScope,
           queryParams: { hd: "commure.com", login_hint: session?.user.email ?? "" }
         }
       });
       if (error) {
-        sessionStorage.removeItem(feedbackSyncKey);
+        sessionStorage.removeItem(pendingKey);
         throw new Error("Google authorization could not start. Try again.");
       }
     } catch (error) {
@@ -372,7 +377,7 @@ export default function Home() {
   const selectedTool = tools.find(tool => tool.key === scope);
   const summary = selectedTool ? scoped.find(entry => entry.kind === "tool") : undefined;
   const tests = scoped.filter(entry => entry.kind === "test");
-  const feedback = scoped.filter(entry => entry.kind === "feedback" && entry.status !== "Resolved");
+  const feedback = scoped.filter(entry => entry.kind === "feedback" && entry.status === "Pending");
   const catalog = scoped.filter(entry => catalogKinds.has(entry.kind));
   const currentTab = tabs.find(item => item.key === tab);
   const tabRows = tab === "catalog" ? catalog : scoped.filter(entry => entry.kind === tab);
@@ -387,7 +392,28 @@ export default function Home() {
   );
   if (tab === "catalog") filtered.sort((a, b) => (a.area ?? "").localeCompare(b.area ?? "") || a.title.localeCompare(b.title));
   const itemById = new Map(entries.map(entry => [entry.id, entry]));
-  const canEdit = (entry: Entry) => entry.kind !== "tool" && entry.kind !== "test" && !entry.feedback_sheet_tab && (canManage || entry.created_by === userId);
+  const canEdit = (entry: Entry) => entry.kind !== "tool" && entry.kind !== "test" &&
+    (canManage || (!entry.feedback_sheet_tab && entry.created_by === userId));
+
+  function openEditor(entry: Entry) {
+    setFocused(null);
+    setDraft({ kind: entry.kind, entry });
+  }
+
+  async function saveSheetFeedback(entry: Entry, status: string, notes: string) {
+    if (!session?.provider_token) throw new SheetsAuthorizationError();
+    await writeFeedbackSheet(session.provider_token, entry, {
+      ...(status !== entry.status ? { status } : {}),
+      ...(notes !== entry.details ? { notes } : {})
+    });
+    try {
+      await refreshFeedbackSheet(session.provider_token);
+    } catch {
+      throw new Error("Google Sheets was updated. Select Sync Google Sheet to refresh the tracker.");
+    }
+    setDraft(null);
+    setNotice("Feedback saved to Google Sheets.");
+  }
 
   function openTest(id: string, outcome: string) {
     const entry = itemById.get(id);
@@ -397,6 +423,12 @@ export default function Home() {
   function onSaved(saved: Entry[]) {
     const [entry] = saved;
     const catalog = catalogKinds.has(entry.kind);
+    if (entry.kind === "launch" && draft?.entry) {
+      const previous = draft.entry;
+      const removed = new Set(entries.filter(item => item.id === previous.id ||
+        (previous.readiness_group && item.readiness_group === previous.readiness_group)).map(item => item.id));
+      setEntries(current => current.filter(item => !removed.has(item.id)));
+    }
     storeEntries(saved);
     if (catalog) setRefresh(value => value + 1);
     if (tab !== "launch" && tab !== "testing" && entry.kind !== "launch") {
@@ -462,7 +494,7 @@ export default function Home() {
           {isAdmin && client && <WorkspaceTesting db={client} onOpen={openTest} />}
         </>
         : tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} pending={pendingChecks}
-          onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry })}
+          onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry, tool: entry.tool_key })}
           onDelete={entry => confirmDeletion([entry], entry.tool_key)}
           onCheck={(entry, checked) => void saveStatus(entry, completionStatus(entry, checked))} onOpen={setFocused} />
         : tab === "overview" ? <>
@@ -485,12 +517,12 @@ export default function Home() {
           </section>}
           <section className="stats" aria-label="Tracking totals">
             <Stat title="Tracked features and metrics" value={catalog.length} detail={`${catalog.filter(entry => entry.kind === "feature").length} features · ${catalog.filter(entry => entry.kind === "metric").length} metrics`} onClick={() => navigate("catalog")} />
-            <Stat title="Open feedback" value={feedback.length} detail="New or triaged" onClick={() => navigate("feedback")} />
+            <Stat title="Open feedback" value={feedback.length} detail="Pending" onClick={() => navigate("feedback")} />
             <Stat title="Logged test results" value={tests.length} detail={`${people.length} ${people.length === 1 ? "tester" : "testers"} · ${tests.filter(entry => entry.status === "Passed").length} passed`} onClick={() => navigate("test")} />
           </section>
           <ReadinessPlan key={scope} entries={scoped} scope={scope} managing={canManage} busy={loading || readinessBusy}
             onAdd={() => setDraft({ kind: "launch", tool: scope === "all" ? undefined : scope })}
-            onEdit={copies => setDraft({ kind: "launch", entry: copies[0], readinessCopies: copies.length > 1 ? copies : undefined })}
+            onEdit={copies => openEditor(copies[0])}
             onDelete={copies => confirmDeletion(copies, scope === "all" ? null : scope)}
             onCheck={(copies, checked) => copies.length === 1
               ? void saveStatus(copies[0], completionStatus(copies[0], checked))
@@ -517,9 +549,14 @@ export default function Home() {
           </div><div className="actions">
             {tab === "feedback" && <>
               {showSources && <a className="secondary" href={feedbackSheetUrl} target="_blank" rel="noreferrer">Open feedback sheet ↗</a>}
-              {canManage && <button className="secondary" disabled={syncing} onClick={() => void connectFeedbackSheet()}>
-                {syncing ? "Syncing…" : "Sync Google Sheet"}
-              </button>}
+              {canManage && <>
+                <button className="secondary" disabled={syncing} onClick={() => void connectFeedbackSheet()}>
+                  {syncing ? "Syncing…" : "Sync Google Sheet"}
+                </button>
+                <button className="secondary" disabled={syncing} onClick={() => void connectFeedbackSheet(true)}>
+                  Connect Google Sheets editing
+                </button>
+              </>}
             </>}
             {tab === "catalog" ? canManage && <>
               <button className="secondary" onClick={() => setDraft({ kind: "feature" })}>Add feature</button>
@@ -538,6 +575,7 @@ export default function Home() {
           </div>
           {tab === "catalog" || tab === "feedback" ? <ToolGroups key={`${tab}-${scope}`}
             scope={scope} tab={tab} rows={filtered} items={itemById} onOpen={setFocused} showSources={showSources}
+            onEditFeedback={entry => { if (canEdit(entry)) openEditor(entry); }} canEditFeedback={canEdit}
             filterKind={kind} filtering={!!(query || kind || status)}
             catalogStatus={canManage ? { pending: pendingChecks, save: saveStatus } : undefined} />
             : <EntryTable rows={filtered} visibleTool={scope === "all"} onOpen={setFocused} items={itemById} usage={tab === "test"}
@@ -559,10 +597,11 @@ export default function Home() {
       </footer>
     </Modal>}
     {focused && <EntryDetails showSources={showSources} entry={focused} parent={focused.parent_id ? itemById.get(focused.parent_id) : undefined}
-      close={() => setFocused(null)} edit={canEdit(focused) ? () => { setDraft({ kind: focused.kind, entry: focused }); setFocused(null); } : undefined}
+      close={() => setFocused(null)} edit={canEdit(focused) ? () => openEditor(focused) : undefined}
       add={focused.kind !== "test" ? nextKind => { setDraft({ kind: nextKind, parent: focused }); setFocused(null); } : undefined}
     />}
-    {draft && <Editor showSources={showSources} draft={draft} scope={scope} entries={entries} onClose={() => setDraft(null)} onSaved={onSaved}
+    {draft?.entry?.feedback_sheet_tab ? <SheetFeedbackEditor entry={draft.entry}
+      onClose={() => setDraft(null)} onSave={saveSheetFeedback} /> : draft && <Editor showSources={showSources} draft={draft} scope={scope} entries={entries} onClose={() => setDraft(null)} onSaved={onSaved}
       onFailure={tool => {
         if (draft.kind === "launch" && draft.entry) setRefresh(value => value + 1);
         logActivity(tool, activityPage, `Save ${labels[draft.kind].toLowerCase()}`, "Failed");
@@ -576,9 +615,10 @@ function Stat({ title, detail, value, onClick }: { title: string; detail: string
 
 type CatalogStatus = { pending: string[]; save: (entry: Entry, status: string) => Promise<void> };
 
-function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, catalogStatus, showSources }: {
+function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, catalogStatus, showSources, onEditFeedback, canEditFeedback }: {
   scope: Scope; tab: "catalog" | "feedback"; rows: Entry[]; filterKind: string; filtering: boolean;
   items: Map<string, Entry>; onOpen: (entry: Entry) => void; catalogStatus?: CatalogStatus; showSources: boolean;
+  onEditFeedback: (entry: Entry) => void; canEditFeedback: (entry: Entry) => boolean;
 }) {
   const [expanded, setExpanded] = useState<Partial<Record<ToolKey, boolean>>>({});
   const groups = tools.filter(tool => scope === "all" || tool.key === scope);
@@ -597,7 +637,7 @@ function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, ca
         </button></h3>
         <div id={`${tab}-${tool.key}-entries`} className="tool-group-content" hidden={!open}>
           {open && (tab === "feedback"
-            ? <EntryTable showSources={showSources} rows={groupRows} visibleTool={false} variant="feedback" items={items} onOpen={onOpen}
+            ? <EntryTable showSources={showSources} rows={groupRows} visibleTool={false} variant="feedback" items={items} onOpen={onOpen} onEditFeedback={onEditFeedback} canEditFeedback={canEditFeedback}
                 empty={filtering ? "No feedback matches these filters." : "No feedback recorded for this tool."} />
             : <>
               {filterKind !== "metric" && <section><h4>Features</h4>
@@ -613,16 +653,18 @@ function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, ca
   </div>;
 }
 
-function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogStatus, showSources, empty = "No follow-up entries." }: {
+function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogStatus, showSources, onEditFeedback, canEditFeedback, empty = "No follow-up entries." }: {
   rows: Entry[]; visibleTool: boolean; usage?: boolean; variant?: "metric" | "feedback"; items: Map<string, Entry>; onOpen: (entry: Entry) => void; empty?: string; catalogStatus?: CatalogStatus; showSources?: boolean;
+  onEditFeedback?: (entry: Entry) => void; canEditFeedback?: (entry: Entry) => boolean;
 }) {
   const showTest = usage || rows[0]?.kind === "test";
   const showPlan = rows[0]?.kind === "plan";
+  const showFeedbackActions = variant === "feedback" && rows.some(entry => canEditFeedback?.(entry));
   if (!rows.length) return <p className="empty">{empty}</p>;
   return <div className="table-wrap"><table>
     <thead><tr><th>{showTest ? "Action" : variant === "metric" ? "Metric" : variant === "feedback" ? "Feedback" : "Entry"}</th>{visibleTool && <th>Tool</th>}<th>{showTest ? "Outcome" : "Status"}</th>
       {showTest ? <><th>Tester</th><th>Environment</th><th>Logged (ET)</th></> :
-        showPlan ? <><th>Owner</th><th>Target date</th></> : variant === "feedback" ? <><th>Requested by</th>{showSources && <th>Source</th>}</>
+        showPlan ? <><th>Owner</th><th>Target date</th></> : variant === "feedback" ? <><th>Requested by</th><th>Notes</th>{showSources && <th>Source</th>}{showFeedbackActions && <th>Actions</th>}</>
           : variant === "metric" ? <><th>Area</th><th>Metric source</th></> : <th>Area / type</th>}</tr></thead>
     <tbody>{rows.map(entry => <tr key={entry.id}>
       <td><button className="row-link" onClick={() => onOpen(entry)}>{entry.title}</button>
@@ -634,10 +676,11 @@ function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogS
         : <Badge>{entry.status}</Badge>}</td>
       {showTest ? <><td>{entry.actor_email ?? "—"}</td><td>{entry.environment}</td><td className="nowrap">{stamp.format(new Date(entry.created_at))}</td></>
         : showPlan ? <><td>{entry.owner ?? "—"}</td><td>{entry.due_date ? day.format(new Date(entry.due_date)) : "—"}</td></>
-        : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td>{showSources && <td>
+        : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td><td className="feedback-notes">{entry.details || "—"}</td>{showSources && <td>
           {entry.feedback_sheet_tab && validLink(entry.source_url)
             ? <a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">{entry.feedback_sheet_tab} ↗</a> : "Tracker"}
-        </td>}</> : variant === "metric" ? <><td>{entry.area ?? "—"}</td><td>
+        </td>}{showFeedbackActions && <td>{canEditFeedback?.(entry) &&
+          <button className="secondary" data-activity="Edit feedback" aria-label={`Edit ${entry.title}`} onClick={() => onEditFeedback?.(entry)}>Edit</button>}</td>}</> : variant === "metric" ? <><td>{entry.area ?? "—"}</td><td>
           <span>{entry.metric_source || "—"}</span>
           {showSources && validLink(entry.source_url) && <span className="subline"><a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">View source ↗</a></span>}
         </td></> : <td>{[entry.area, labels[entry.kind]].filter(Boolean).join(" · ")}</td>}
@@ -668,6 +711,7 @@ function EntryDetails({ entry, parent, close, edit, add, showSources }: {
       <p className="details-copy">{entry.details || "No notes added."}</p>
       {entry.metric_source && <p><strong>Metric source</strong> {entry.metric_source}</p>}
       {entry.feedback_requester && <p><strong>Requested by</strong> {entry.feedback_requester}</p>}
+      {entry.readiness_latest_status && <p className="details-copy"><strong>Latest status</strong> {entry.readiness_latest_status}</p>}
       {entry.feedback_response && <p className="details-copy"><strong>Response</strong> {entry.feedback_response}</p>}
       {entry.feedback_sheet_present === false && <p className="muted">This entry was removed from the source sheet.</p>}
       {parent && <p><strong>Related entry</strong> {parent.title}</p>}
@@ -691,17 +735,23 @@ function EntryDetails({ entry, parent, close, edit, add, showSources }: {
 function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSources }: {
   draft: Draft; scope: Scope; entries: Entry[]; showSources: boolean; onClose: () => void; onSaved: (saved: Entry[]) => void; onFailure: (tool: Scope) => void;
 }) {
-  const { kind, entry, parent, readinessCopies } = draft;
+  const { kind, entry, parent } = draft;
+  const editChecklist = kind === "launch" && !!entry;
+  const sharedEdit = editChecklist && scope === "all" && !draft.tool;
+  const readinessCopies = editChecklist ? entries.filter(item => item.id === entry.id ||
+    (entry.readiness_group && item.readiness_group === entry.readiness_group)) : [];
+  const membership = useRef(readinessCopies);
   const bulkCreate = (catalogKinds.has(kind) || kind === "launch") && !entry && !parent && !draft.tool;
   const changedFields = useRef(new Set<string>());
   const initialTool = entry?.tool_key ?? parent?.tool_key ?? draft.tool ?? (scope === "all" ? null : scope);
-  const [selectedTools, setSelectedTools] = useState<ToolKey[]>(initialTool ? [initialTool] : []);
+  const [selectedTools, setSelectedTools] = useState<ToolKey[]>(membership.current.length
+    ? membership.current.map(copy => copy.tool_key) : initialTool ? [initialTool] : []);
   const tool = selectedTools.length === 1 ? selectedTools[0] : "";
   const [related, setRelated] = useState(entry?.parent_id ?? parent?.id ?? "");
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState("");
-  const mixedStatus = readinessCopies?.some(copy => copy.status !== entry?.status);
-  const mixedCategory = readinessCopies?.some(copy => copy.area !== entry?.area);
+  const mixedStatus = sharedEdit && membership.current.some(copy => copy.status !== entry?.status);
+  const mixedCategory = sharedEdit && membership.current.some(copy => copy.area !== entry?.area);
   const relatedEntries = entries.filter(item => item.id !== entry?.id && item.tool_key === tool && (catalogKinds.has(item.kind) || item.kind === "plan" || item.kind === "feedback"))
     .sort((a, b) => a.title.localeCompare(b.title));
 
@@ -721,6 +771,7 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
       title, details: read("details"), status: read("status"), parent_id: tool && related || null,
       area: read("area") || null, owner: read("owner") || null, due_date: read("due_date") || null,
       ...(showSources ? { deployment_url: deployment || null, source_url: source || null } : {}),
+      ...(kind === "launch" ? { readiness_latest_status: read("readiness_latest_status") || null } : {}),
       ...(kind === "metric" ? { metric_source: read("metric_source") || null } : {})
     };
     setSaving(true);
@@ -729,15 +780,17 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
       const changes = Object.fromEntries(Object.entries(values).filter(([field, value]) =>
         changedFields.current.has(field) && !((field === "area" || field === "status") && !value)
       ));
-      if (readinessCopies && Object.keys(changes).length === 0) {
-        onClose();
-        return;
-      }
       const group = kind === "launch" && selectedTools.length > 1 ? crypto.randomUUID() : null;
-      const edit = entry ? client.from(table).update(values).eq("id", entry.id) : null;
-      if (edit && entry?.kind === "launch") edit.eq("updated_at", entry.updated_at);
-      const result = readinessCopies
-        ? await updateReadiness(readinessCopies, changes)
+      const edit = entry && !editChecklist ? client.from(table).update(values).eq("id", entry.id) : null;
+      delete changes.source_url;
+      const result = editChecklist
+        ? await client.rpc("vercel_migration_tracker_save_checklist_item", {
+          primary_id: entry.id,
+          selected_tools: selectedTools,
+          versions: Object.fromEntries(membership.current.map(copy => [copy.id, copy.updated_at])),
+          changes,
+          apply_to_group: sharedEdit || !selectedTools.includes(entry.tool_key)
+        })
         : edit
           ? await edit.select()
           : await client.from(table).insert(selectedTools.map(tool_key => ({
@@ -747,9 +800,7 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
       if (result.error || result.data.length === 0) throw result.error ?? new Error("No entries returned");
       onSaved(result.data as Entry[]);
     } catch {
-      setProblem(readinessCopies
-        ? "The shared edit could not be saved. Close and reopen the item to edit the latest version."
-        : kind === "launch" && entry ? "The edit could not be saved. Close and reopen the item to edit the latest version."
+      setProblem(editChecklist ? "The edit could not be saved. Close and reopen the item to edit the latest version."
         : "The save could not be confirmed. Check your access and try again.");
       onFailure(tool || "all");
     } finally {
@@ -765,11 +816,7 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
     }}>
       <div className="dialog-body form">
         {problem && <p className="alert wide" role="alert">{problem}</p>}
-        {readinessCopies ? <div className="wide">
-          <strong>Tools</strong>
-          <p>{tools.filter(item => readinessCopies.some(copy => copy.tool_key === item.key)).map(item => item.name).join(" · ")}</p>
-          <p className="muted">Only fields you change here are applied to every copy. The form starts with the values from {tools.find(item => item.key === entry?.tool_key)?.name}.</p>
-        </div> : bulkCreate ? <fieldset className="wide tool-picker">
+        {(editChecklist || bulkCreate) ? <fieldset className="wide tool-picker">
           <legend>Tools</legend>
           {tools.map(item => <label key={item.key}>
             <input type="checkbox" checked={selectedTools.includes(item.key)} disabled={saving} onChange={event => {
@@ -786,6 +833,8 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
             setRelated("");
           }}>
           <option value="">Select a tool</option>{tools.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}</select></label>}
+        {editChecklist && membership.current.some(copy => !selectedTools.includes(copy.tool_key)) &&
+          <p className="muted wide">Saving removes this checklist item from the tools you deselected.</p>}
         <label className="wide">{kind === "test" ? "Action tested" : "Title"}<input name="title" required maxLength={160} defaultValue={entry?.title} /></label>
         <label>{kind === "test" ? "Outcome" : "Status"}<select name="status" defaultValue={mixedStatus ? "" : entry?.status ?? (catalogKinds.has(kind) ? "Needs verification" : statuses[kind][0])}>
           {mixedStatus && <option value="">Varies by tool</option>}{statuses[kind].map(value => <option key={value}>{value}</option>)}</select></label>
@@ -797,17 +846,67 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
           <label>Owner<input name="owner" maxLength={160} defaultValue={entry?.owner ?? ""} /></label>
           <label>Due date<input type="date" name="due_date" defaultValue={entry?.due_date ?? ""} /></label>
         </>}
-        {!readinessCopies && <label className="wide">Related entry <select value={related} disabled={!tool || saving} onChange={event => setRelated(event.target.value)}>
+        {(!editChecklist || tool === entry.tool_key) && <label className="wide">Related entry <select name="parent_id" value={related} disabled={!tool || saving} onChange={event => setRelated(event.target.value)}>
           <option value="">None</option>{relatedEntries.map(item => <option key={item.id} value={item.id}>{labels[item.kind]} · {item.title}</option>)}</select>
           {selectedTools.length > 1 && <small className="muted">Related entries are specific to one tool. You can link each copy after saving.</small>}
         </label>}
-        <label className="wide">{kind === "test" ? "Steps and observations" : kind === "plan" ? "Scope and acceptance criteria" : kind === "launch" ? "Notes" : "Details"}
+        {kind === "launch" && <label className="wide">Latest status
+          <textarea name="readiness_latest_status" rows={2} maxLength={5000} defaultValue={entry?.readiness_latest_status ?? ""} />
+        </label>}
+        <label className="wide">{kind === "test" ? "Steps and observations" : kind === "plan" ? "Scope and acceptance criteria" : kind === "launch" || kind === "feedback" ? "Notes" : "Details"}
           <textarea name="details" rows={4} maxLength={5000} defaultValue={entry?.details} required={kind === "feedback" || kind === "plan"} /></label>
         {showSources && (kind === "test" || kind === "plan" || kind === "launch") && <label className="wide">{kind === "launch" ? "Related link" : "Deployment link"} <input name="deployment_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.deployment_url ?? ""} /></label>}
         {kind === "metric" && <label className="wide">Metric source<input name="metric_source" maxLength={500} defaultValue={entry?.metric_source ?? ""} /></label>}
         {showSources && catalogKinds.has(kind) && <label className="wide">Source link <input name="source_url" type="url" maxLength={1000} placeholder="https://…" defaultValue={entry?.source_url ?? ""} /></label>}
       </div>
       <footer className="dialog-footer"><button className="secondary" type="button" disabled={saving} onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : selectedTools.length > 1 ? `Save to ${selectedTools.length} tools` : "Save"}</button></footer>
+    </form>
+  </Modal>;
+}
+
+
+function SheetFeedbackEditor({ entry, onClose, onSave }: {
+  entry: Entry; onClose: () => void; onSave: (entry: Entry, status: string, notes: string) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const status = String(values.get("status"));
+    const notes = String(values.get("notes") ?? "").trim();
+    if (status === entry.status && notes === entry.details) { onClose(); return; }
+    setSaving(true);
+    setProblem("");
+    try {
+      await onSave(entry, status, notes);
+    } catch (error) {
+      setProblem(error instanceof SheetsAuthorizationError
+        ? "Close this form and select Connect Google Sheets editing before saving feedback."
+        : error instanceof Error ? error.message : "Feedback could not be saved.");
+      setSaving(false);
+    }
+  }
+
+  return <Modal title="Edit feedback" close={() => { if (!saving) onClose(); }}>
+    <form onSubmit={submit}>
+      <div className="dialog-body form">
+        <p className="wide"><strong>{entry.title}</strong></p>
+        {problem && <p className="alert wide" role="alert">{problem}</p>}
+        <label className="wide">Status
+          <select name="status" defaultValue={entry.status} disabled={saving}>
+            {statuses.feedback.map(status => <option key={status}>{status}</option>)}
+          </select>
+        </label>
+        <label className="wide">Notes
+          <textarea name="notes" rows={5} maxLength={5000} defaultValue={entry.details} disabled={saving} />
+        </label>
+      </div>
+      <footer className="dialog-footer">
+        <button className="secondary" type="button" disabled={saving} onClick={onClose}>Cancel</button>
+        <button className="primary" disabled={saving}>{saving ? "Saving…" : "Save feedback"}</button>
+      </footer>
     </form>
   </Modal>;
 }
