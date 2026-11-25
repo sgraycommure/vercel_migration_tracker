@@ -21,11 +21,12 @@ type Activity = {
 const editableOutcomes = ["Passed", "Failed", "Blocked", "Started"];
 const outcomes = [...editableOutcomes, "Succeeded", "Viewed", "Not recorded"];
 
-export function TestingActivity({ db, scope, compact, group, onOpen }: {
+export function TestingActivity({ db, scope, compact, group, showOutcomes = false, onOpen }: {
   db: SupabaseClient;
   scope: Scope;
   compact?: boolean;
   group?: string;
+  showOutcomes?: boolean;
   onOpen: (id: string, outcome: string) => void;
 }) {
   const [rows, setRows] = useState<Activity[]>([]);
@@ -90,17 +91,17 @@ export function TestingActivity({ db, scope, compact, group, onOpen }: {
 
   return <>
     {!compact && <>
-      {!group && <p className="muted activity-note">Includes recorded app opens, page views, clicks, and saved actions. Clicks without an outcome are marked “Not recorded.”</p>}
+      {!group && <p className="muted activity-note">Includes recorded app opens, page views, clicks, and saved actions.</p>}
       <form className="filters" onSubmit={event => { event.preventDefault(); setPage(null); setQuery(search.trim()); }}>
         <input aria-label="Search testing activity" placeholder="Tester, page, action, or session" value={search} onChange={event => setSearch(event.target.value)} />
         <button className="secondary">Search</button>
         {scope === "all" && !group && <select aria-label="Filter testing tool" value={tool} onChange={event => { setPage(null); setTool(event.target.value); }}>
-          <option value="">All tools</option><option value="tracker">Tooling Tracker activity</option>
+          <option value="">All tools</option>
           {tools.map(item => <option key={item.key} value={item.key}>{item.name}</option>)}
         </select>}
-        <select aria-label="Filter testing outcome" value={outcome} onChange={event => { setPage(null); setOutcome(event.target.value); }}>
+        {showOutcomes && <select aria-label="Filter testing outcome" value={outcome} onChange={event => { setPage(null); setOutcome(event.target.value); }}>
           <option value="">All outcomes</option>{outcomes.map(value => <option key={value}>{value}</option>)}
-        </select>
+        </select>}
         <button type="button" className="secondary" onClick={reload}>Refresh activity</button>
       </form>
     </>}
@@ -108,14 +109,14 @@ export function TestingActivity({ db, scope, compact, group, onOpen }: {
     {editError && <p className="alert" role="alert">{editError}</p>}
     {problem && <p className="alert" role="alert">Testing activity could not load. <button className="link-button" onClick={reload}>Retry</button></p>}
     {rows.length > 0 && <div className="table-wrap"><table>
-      <thead><tr><th>Time (ET)</th><th>Tester</th><th>Tool / environment</th><th>Function tested</th><th>Action</th><th>Outcome</th></tr></thead>
+      <thead><tr><th>Time (ET)</th><th>Tester</th><th>Tool / environment</th><th>Function tested</th><th>Action</th>{showOutcomes && <th>Outcome</th>}</tr></thead>
       <tbody>{rows.map(row => <tr key={row.event_key}>
         <td className="nowrap">{stamp.format(new Date(row.occurred_at))}</td>
         <td>{row.actor || "Unknown tester"}{row.session_id && <small className="subline" title={row.session_id}>Session {row.session_id.slice(0, 8)}</small>}</td>
         <td>{tools.find(item => item.key === row.tool_key)?.name ?? row.source}<small className="subline">{[row.source, row.environment].filter(Boolean).join(" · ")}</small></td>
         <td>{row.page || "Application"}</td>
         <td>{row.entry_id ? <button className="row-link" onClick={() => onOpen(row.entry_id!, row.outcome)}>{row.action}</button> : row.action}</td>
-        <td>{editing?.event_key === row.event_key ? <div className="outcome-editor">
+        {showOutcomes && <td>{editing?.event_key === row.event_key ? <div className="outcome-editor">
           <select aria-label="Test outcome" value={selectedOutcome} disabled={saving} onChange={event => setSelectedOutcome(event.target.value)}>
             <option value="">Use recorded outcome</option>{editableOutcomes.map(value => <option key={value}>{value}</option>)}
           </select>
@@ -127,7 +128,7 @@ export function TestingActivity({ db, scope, compact, group, onOpen }: {
             setEditing(row); setNotice(""); setEditError("");
             setSelectedOutcome(editableOutcomes.includes(row.outcome) ? row.outcome : "");
           }}>Edit outcome</button>
-        </div>}</td>
+        </div>}</td>}
       </tr>)}</tbody>
     </table></div>}
     {loading && <p className="empty" role="status">Loading testing activity…</p>}
@@ -156,13 +157,12 @@ export function WorkspaceTesting({ db, onOpen }: { db: SupabaseClient; onOpen: (
     });
     return () => { current = false; };
   }, [db, refresh]);
-  const groups = [...tools, { key: "workspace", name: "Tooling Tracker workspace" }];
   return <section className="section" aria-label="Testing by tool">
     <div className="section-head"><div><h2>Testing by tool</h2>
       <p className="muted">Tester counts use distinct recorded identities. Actions tested include all captured activity, including opens, page views, clicks, and manual tests.</p>
     </div><button className="secondary" onClick={() => setRefresh(value => value + 1)}>Refresh testing</button></div>
     {error && <p className="alert" role="alert">Testing totals could not load.</p>}
-    <div className="tool-groups">{groups.map(group => {
+    <div className="tool-groups">{tools.map(group => {
       const groupTotals = totals?.[group.key];
       const expanded = active === group.key;
       return <div className="tool-group" key={group.key}>
@@ -173,7 +173,7 @@ export function WorkspaceTesting({ db, onOpen }: { db: SupabaseClient; onOpen: (
           </span><span className="group-chevron" aria-hidden="true">⌄</span>
         </button></h3>
         <div id={`testing-${group.key}`} className="tool-group-content" hidden={!expanded}>
-          {expanded && <TestingActivity key={refresh} db={db} scope="all" group={group.key} onOpen={onOpen} />}
+          {expanded && <TestingActivity key={refresh} db={db} scope="all" group={group.key} showOutcomes onOpen={onOpen} />}
         </div>
       </div>;
     })}</div>

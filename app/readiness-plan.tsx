@@ -1,5 +1,5 @@
 import { useRef, useState, type DragEvent, type MouseEvent } from "react";
-import { day, tools, type Entry, type Scope } from "./model";
+import { day, punchListSummaryGroup, tools, type Entry, type Scope } from "./model";
 
 type ReadinessItem = { key: string; entries: Entry[]; position: number; created: string };
 
@@ -34,7 +34,8 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
   onCheck: (entries: Entry[], checked: boolean) => void;
   onMove: (item: string, adjacent: string, placeAfter?: boolean) => Promise<boolean>;
 }) {
-  const items = readinessItems(entries, scope);
+  const items = readinessItems(entries, scope).filter(item => scope !== "all" ||
+    item.key === punchListSummaryGroup || item.entries.some(entry => entry.area !== "Punch list"));
   const list = useRef<HTMLUListElement>(null);
   const [draggedKey, setDraggedKey] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ key: string; after: boolean } | null>(null);
@@ -59,7 +60,7 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
 
   async function move(event: MouseEvent<HTMLButtonElement>, key: string, adjacent: string, direction: number) {
     const restoreFocus = document.activeElement === event.currentTarget;
-    if (!await onMove(key, adjacent) || !restoreFocus) return;
+    if (!await onMove(key, adjacent, scope === "all" ? direction > 0 : undefined) || !restoreFocus) return;
     requestAnimationFrame(() => {
       const row = list.current?.querySelector(`[data-readiness-key="${key}"]`);
       const sameDirection = row?.querySelector<HTMLButtonElement>(`[data-move="${direction}"]:not(:disabled)`);
@@ -68,10 +69,10 @@ export default function ReadinessPlan({ entries, scope, managing, busy, pending,
     });
   }
 
-  return <section className="section" aria-label={scope === "all" ? "Unified readiness plan" : "Readiness plan"}>
+  return <section className="section" aria-label={scope === "all" ? "Launch Readiness Plan" : "Readiness plan"}>
     <div className="section-head">
       <div>
-        <h2>{scope === "all" ? "Unified readiness plan" : "Readiness plan"}</h2>
+        <h2>{scope === "all" ? "Launch Readiness Plan" : "Readiness plan"}</h2>
         {scope === "all" && <p className="muted">Edits apply to all tools listed on the item.</p>}
       </div>
       {managing && <button className="primary" disabled={busy} onClick={onAdd}>Add checklist item</button>}

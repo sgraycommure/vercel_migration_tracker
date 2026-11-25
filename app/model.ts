@@ -71,6 +71,8 @@ export function validLink(value: string | null) {
   }
 }
 
+export const punchListSummaryGroup = "642a31a7-6544-4057-8f60-ab210a68ae10";
+
 export const launchCategories = ["Punch list", "Training", "Office hours", "Testing", "Stakeholder approval", "Communications", "Cutover & support"];
 
 export type Scope = ToolKey | "all";

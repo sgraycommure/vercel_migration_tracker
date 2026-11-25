@@ -340,7 +340,7 @@ export default function Home() {
   }
 
   function navigate(nextTab: Tab, nextScope = scope) {
-    setTab(nextTab);
+    setTab(nextTab === "plan" && !showSources ? "overview" : nextTab);
     setScope(nextScope);
     setSearch("");
     setStatus("");
@@ -483,7 +483,7 @@ export default function Home() {
           </div>}
         </section>
         {tab !== "launch" && tab !== "testing" && <nav className="tabs" aria-label="Tracker sections">
-          {tabs.map(item => <button key={item.key} aria-current={item.key === tab ? "page" : undefined} onClick={() => navigate(item.key)}>{item.name}</button>)}
+          {tabs.filter(item => item.key !== "plan" || showSources).map(item => <button key={item.key} aria-current={item.key === tab ? "page" : undefined} onClick={() => navigate(item.key)}>{item.name}</button>)}
         </nav>}
         {notice && <p className="notice" role="status">{notice}</p>}
         {problem && <p className="alert" role="alert">{problem} <button className="link-button" onClick={() => setRefresh(value => value + 1)}>Refresh</button></p>}
@@ -493,7 +493,7 @@ export default function Home() {
             onStatus={(entry, status) => void saveStatus(entry, status)} />
           {isAdmin && client && <WorkspaceTesting db={client} onOpen={openTest} />}
         </>
-        : tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} pending={pendingChecks}
+        : tab === "launch" ? <LaunchManagement entries={entries} managing={canManage} showBuildPlans={showSources} pending={pendingChecks}
           onAdd={tool => setDraft({ kind: "launch", tool })} onEdit={entry => setDraft({ kind: entry.kind, entry, tool: entry.tool_key })}
           onDelete={entry => confirmDeletion([entry], entry.tool_key)}
           onCheck={(entry, checked) => void saveStatus(entry, completionStatus(entry, checked))} onOpen={setFocused} />
@@ -509,7 +509,7 @@ export default function Home() {
                       <Mark tone={tool.color}>{tool.short}</Mark><span>{tool.name}</span><span aria-hidden="true">↗</span>
                     </button>
                   </h3>
-                  <LaunchProgress label="Planned features and builds" rows={features} />
+                  <LaunchProgress label={showSources ? "Planned features and builds" : "Planned features"} rows={features} />
                   <LaunchProgress label="Readiness preparation" rows={readiness} />
                 </article>;
               })}
@@ -543,7 +543,7 @@ export default function Home() {
           <TestingActivity key={scope} db={client} scope={scope} onOpen={openTest} />
         </section> : <section className="section">
           <div className="section-head"><div><h2>{currentTab?.name}</h2>
-            {tab === "test" && <p className="muted">Test actions recorded by signed-in users, with deployment, outcome, and notes.</p>}
+            {tab === "test" && <p className="muted">Test actions recorded by signed-in users.</p>}
             {tab === "catalog" && <p className="muted">Expand a tool to see its features, metrics, and metric sources.</p>}
             {tab === "feedback" && <p className="muted">Feedback from the migration spreadsheet and entries submitted here.</p>}
           </div><div className="actions">
@@ -561,13 +561,13 @@ export default function Home() {
             {tab === "catalog" ? canManage && <>
               <button className="secondary" onClick={() => setDraft({ kind: "feature" })}>Add feature</button>
               <button className="secondary" onClick={() => setDraft({ kind: "metric" })}>Add metric</button>
-            </> : tab !== "test" && <button className="primary" onClick={() => setDraft({ kind: tab })}>Add {labels[tab].toLowerCase()}</button>}
+            </> : tab !== "test" && (tab !== "plan" || showSources) && <button className="primary" onClick={() => setDraft({ kind: tab })}>Add {labels[tab].toLowerCase()}</button>}
           </div></div>
           {tab === "feedback" && syncProblem && <p className="alert" role="alert">{syncProblem}</p>}
           <div className="filters">
             <input aria-label="Search entries" placeholder="Search entries" type="search" value={search} onChange={event => setSearch(event.target.value)} />
             {tab === "catalog" && <select aria-label="Entry type" value={kind} onChange={event => setKind(event.target.value)}><option value="">All types</option><option value="feature">Features</option><option value="metric">Metrics</option></select>}
-            <select aria-label="Status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option>{statusOptions.map(value => <option key={value}>{value}</option>)}</select>
+            {tab !== "test" && <select aria-label="Status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option>{statusOptions.map(value => <option key={value}>{value}</option>)}</select>}
             {tab === "test" && <>
               <select aria-label="Tester" value={tester} onChange={event => setTester(event.target.value)}><option value="">All testers</option>{people.map(person => <option key={person}>{person}</option>)}</select>
               <select aria-label="Environment" value={environment} onChange={event => setEnvironment(event.target.value)}><option value="">All environments</option><option>Preview</option><option>Production</option><option>Local</option></select>
@@ -637,7 +637,7 @@ function ToolGroups({ scope, tab, rows, filterKind, filtering, items, onOpen, ca
         </button></h3>
         <div id={`${tab}-${tool.key}-entries`} className="tool-group-content" hidden={!open}>
           {open && (tab === "feedback"
-            ? <EntryTable showSources={showSources} rows={groupRows} visibleTool={false} variant="feedback" items={items} onOpen={onOpen} onEditFeedback={onEditFeedback} canEditFeedback={canEditFeedback}
+            ? <EntryTable rows={groupRows} visibleTool={false} variant="feedback" items={items} onOpen={onOpen} onEditFeedback={onEditFeedback} canEditFeedback={canEditFeedback}
                 empty={filtering ? "No feedback matches these filters." : "No feedback recorded for this tool."} />
             : <>
               {filterKind !== "metric" && <section><h4>Features</h4>
@@ -662,24 +662,22 @@ function EntryTable({ rows, visibleTool, usage, variant, items, onOpen, catalogS
   const showFeedbackActions = variant === "feedback" && rows.some(entry => canEditFeedback?.(entry));
   if (!rows.length) return <p className="empty">{empty}</p>;
   return <div className="table-wrap"><table>
-    <thead><tr><th>{showTest ? "Action" : variant === "metric" ? "Metric" : variant === "feedback" ? "Feedback" : "Entry"}</th>{visibleTool && <th>Tool</th>}<th>{showTest ? "Outcome" : "Status"}</th>
+    <thead><tr><th>{showTest ? "Action" : variant === "metric" ? "Metric" : variant === "feedback" ? "Feedback" : "Entry"}</th>{visibleTool && <th>Tool</th>}{!showTest && <th>Status</th>}
       {showTest ? <><th>Tester</th><th>Environment</th><th>Logged (ET)</th></> :
-        showPlan ? <><th>Owner</th><th>Target date</th></> : variant === "feedback" ? <><th>Requested by</th><th>Notes</th>{showSources && <th>Source</th>}{showFeedbackActions && <th>Actions</th>}</>
+        showPlan ? <><th>Owner</th><th>Target date</th></> : variant === "feedback" ? <><th>Requested by</th><th>Notes</th><th>Response</th>{showFeedbackActions && <th>Actions</th>}</>
           : variant === "metric" ? <><th>Area</th><th>Metric source</th></> : <th>Area / type</th>}</tr></thead>
     <tbody>{rows.map(entry => <tr key={entry.id}>
       <td><button className="row-link" onClick={() => onOpen(entry)}>{entry.title}</button>
         {entry.parent_id && <small className="subline">{items.get(entry.parent_id)?.title}</small>}</td>
       {visibleTool && <td>{tools.find(tool => tool.key === entry.tool_key)?.name}</td>}
-      <td>{catalogStatus && catalogKinds.has(entry.kind)
+      {!showTest && <td>{catalogStatus && catalogKinds.has(entry.kind)
         ? <select className="catalog-status" aria-label={`Status for ${entry.title}`} value={entry.status} disabled={catalogStatus.pending.includes(entry.id)}
             onChange={event => void catalogStatus.save(entry,event.target.value)}>{statuses[entry.kind].map(value => <option key={value}>{value}</option>)}</select>
-        : <Badge>{entry.status}</Badge>}</td>
+        : <Badge>{entry.status}</Badge>}</td>}
       {showTest ? <><td>{entry.actor_email ?? "—"}</td><td>{entry.environment}</td><td className="nowrap">{stamp.format(new Date(entry.created_at))}</td></>
         : showPlan ? <><td>{entry.owner ?? "—"}</td><td>{entry.due_date ? day.format(new Date(entry.due_date)) : "—"}</td></>
-        : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td><td className="feedback-notes">{entry.details || "—"}</td>{showSources && <td>
-          {entry.feedback_sheet_tab && validLink(entry.source_url)
-            ? <a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">{entry.feedback_sheet_tab} ↗</a> : "Tracker"}
-        </td>}{showFeedbackActions && <td>{canEditFeedback?.(entry) &&
+        : variant === "feedback" ? <><td>{entry.feedback_requester ?? entry.actor_email ?? "—"}</td><td className="feedback-notes">{entry.details || "—"}</td>
+          <td className="feedback-notes">{entry.feedback_response || "—"}</td>{showFeedbackActions && <td>{canEditFeedback?.(entry) &&
           <button className="secondary" data-activity="Edit feedback" aria-label={`Edit ${entry.title}`} onClick={() => onEditFeedback?.(entry)}>Edit</button>}</td>}</> : variant === "metric" ? <><td>{entry.area ?? "—"}</td><td>
           <span>{entry.metric_source || "—"}</span>
           {showSources && validLink(entry.source_url) && <span className="subline"><a href={validLink(entry.source_url)!} target="_blank" rel="noreferrer">View source ↗</a></span>}
@@ -726,7 +724,7 @@ function EntryDetails({ entry, parent, close, edit, add, showSources }: {
     {(edit || add) && <footer className="dialog-footer">
       {edit && <button className="secondary" onClick={edit}>Edit</button>}
       {add && <><button className="secondary" onClick={() => add("feedback")}>Add feedback</button>
-        <button className="secondary" onClick={() => add("plan")}>Add build plan</button>
+        {showSources && <button className="secondary" onClick={() => add("plan")}>Add build plan</button>}
         <button className="primary" onClick={() => add("test")}>Log test</button></>}
     </footer>}
   </Modal>;
@@ -840,7 +838,7 @@ function Editor({ draft, scope, entries, onClose, onSaved, onFailure, showSource
           {mixedStatus && <option value="">Varies by tool</option>}{statuses[kind].map(value => <option key={value}>{value}</option>)}</select></label>
         {kind === "test" && <label>Environment<select name="environment"><option>Preview</option><option>Production</option><option>Local</option></select></label>}
         {catalogKinds.has(kind) && <label>Area<input name="area" maxLength={80} defaultValue={entry?.area ?? ""} /></label>}
-        {kind === "launch" && <label>Category<select name="area" defaultValue={mixedCategory ? "" : entry?.area ?? "Punch list"}>
+        {kind === "launch" && <label>Category<select name="area" defaultValue={mixedCategory ? "" : entry?.area ?? (scope === "all" && !draft.tool ? "Training" : "Punch list")}>
           {mixedCategory && <option value="">Varies by tool</option>}{launchCategories.map(category => <option key={category}>{category}</option>)}</select></label>}
         {(kind === "plan" || kind === "launch" || kind === "feature") && <>
           <label>Owner<input name="owner" maxLength={160} defaultValue={entry?.owner ?? ""} /></label>

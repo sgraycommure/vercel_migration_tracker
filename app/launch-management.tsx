@@ -30,9 +30,10 @@ export function LaunchProgress({ label, rows }: { label: string; rows: Entry[] }
   </div>;
 }
 
-export default function LaunchManagement({ entries, managing, pending, onAdd, onEdit, onDelete, onCheck, onOpen }: {
+export default function LaunchManagement({ entries, managing, showBuildPlans, pending, onAdd, onEdit, onDelete, onCheck, onOpen }: {
   entries: Entry[];
   managing: boolean;
+  showBuildPlans: boolean;
   pending: string[];
   onAdd: (tool: ToolKey) => void;
   onEdit: (entry: Entry) => void;
@@ -40,6 +41,8 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
   onCheck: (entry: Entry, checked: boolean) => void;
   onOpen: (entry: Entry) => void;
 }) {
+  const featureLabel = showBuildPlans ? "Planned features and builds" : "Planned features";
+
   function checklist(rows: Entry[]) {
     return <ul className="launch-checklist">{rows.map(entry => (
       <li key={entry.id}>
@@ -67,7 +70,7 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
   }
 
   return <section className="section" aria-label="Launch management">
-    <div className="section-head"><div><h2>Readiness by tool</h2><p className="muted">Completion uses the catalog, build plans, and readiness checklist below.</p></div></div>
+    <div className="section-head"><div><h2>Readiness by tool</h2><p className="muted">Completion uses the catalog and readiness checklist below.</p></div></div>
     <div className="launch-tools">{[...tools].sort((a,b) => wave[a.key] - wave[b.key]).map(tool => {
       const scoped = entries.filter(entry => entry.tool_key === tool.key);
       const { features } = launchProgressRows(scoped);
@@ -81,10 +84,10 @@ export default function LaunchManagement({ entries, managing, pending, onAdd, on
           <span className="badge" data-status={complete ? "Passed" : "Planned"}>{complete ? "Checklist complete" : "In preparation"}</span>
         </summary>
         <div className="launch-tool-body">
-          <div className="launch-progress-grid"><LaunchProgress label="Planned features and builds" rows={features} /><LaunchProgress label="Readiness preparation" rows={readiness} /></div>
+          <div className="launch-progress-grid"><LaunchProgress label={featureLabel} rows={features} /><LaunchProgress label="Readiness preparation" rows={readiness} /></div>
           {managing && <div className="actions"><button className="primary" onClick={() => onAdd(tool.key)}>Add checklist item</button></div>}
-          <details className="launch-category"><summary data-activity="Expand planned features and builds">Planned features and builds <small>{features.filter(completed).length}/{features.length}</small></summary>
-            {features.length ? checklist(features) : <p className="empty">No planned features or builds.</p>}
+          <details className="launch-category"><summary data-activity={`Expand ${featureLabel.toLowerCase()}`}>{featureLabel} <small>{features.filter(completed).length}/{features.length}</small></summary>
+            {features.length ? checklist(features) : <p className="empty">No {featureLabel.toLowerCase()}.</p>}
           </details>
           {launchCategories.map(category => {
             const rows = readiness.filter(entry => entry.area === category);
