@@ -60,6 +60,7 @@ h3 { font-size: 17px; letter-spacing: -.018em; }
 .tabs button[aria-current] { color: var(--blue); }
 .tabs button[aria-current]::after { content: ""; position: absolute; inset: auto 0 0; height: 3px; background: var(--blue); border-radius: 3px 3px 0 0; }
 .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+.portfolio-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .stat { text-align: left; background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 11px; padding: 15px; }
 .stat:hover { border-color: #7a99dd; }
 .stat span { display: block; color: var(--muted); font-weight: 650; }

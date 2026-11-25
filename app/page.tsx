@@ -515,10 +515,10 @@ export default function Home() {
               })}
             </div>
           </section>}
-          <section className="stats" aria-label="Tracking totals">
+          <section className={scope === "all" ? "stats portfolio-stats" : "stats"} aria-label="Tracking totals">
             <Stat title="Tracked features and metrics" value={catalog.length} detail={`${catalog.filter(entry => entry.kind === "feature").length} features · ${catalog.filter(entry => entry.kind === "metric").length} metrics`} onClick={() => navigate("catalog")} />
             <Stat title="Open feedback" value={feedback.length} detail="Pending" onClick={() => navigate("feedback")} />
-            <Stat title="Logged test results" value={tests.length} detail={`${people.length} ${people.length === 1 ? "tester" : "testers"} · ${tests.filter(entry => entry.status === "Passed").length} passed`} onClick={() => navigate("test")} />
+            {scope !== "all" && <Stat title="Logged test results" value={tests.length} detail={`${people.length} ${people.length === 1 ? "tester" : "testers"} · ${tests.filter(entry => entry.status === "Passed").length} passed`} onClick={() => navigate("test")} />}
           </section>
           {(scope === "all" ? ["readiness"] : ["readiness", "punch"]).map(view =>
             <ReadinessPlan key={`${scope}-${view}`} entries={scoped} scope={scope} punchOnly={view === "punch"}
